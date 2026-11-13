@@ -16,6 +16,7 @@
   --bg:#14171b;--surface:#1c2026;--text:#e6e9ed;--muted:#9aa3ad;--line:#2e343c;
   --accent:#6fa8dc;--accent-ink:#0d1520;--warn-bg:#3a2717;--warn:#f0b07a;--ok:#7fd19b;}
 *{box-sizing:border-box}
+[hidden]{display:none!important}
 body{margin:0;background:var(--bg);color:var(--text);
   font:15px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif}
 main{max-width:1100px;margin:0 auto;padding:28px 16px 60px}
@@ -50,6 +51,16 @@ h2{font-size:17px;margin:0 0 10px}
 dialog{border:0;padding:0;max-width:95vw;max-height:95vh;background:transparent}
 dialog img{max-width:95vw;max-height:92vh;display:block}
 dialog::backdrop{background:rgba(0,0,0,.7)}
+.card.human{border-color:var(--accent)}
+.stat.hot b{color:var(--warn)}
+.thumb{position:relative}
+.thumb .badge{position:absolute;top:12px;left:12px;font-size:12px;padding:2px 8px;border-radius:10px;background:var(--warn-bg);color:var(--warn);font-weight:600}
+.thumb.s-위임장 .badge{background:var(--bg);color:var(--ok)}
+.thumb.s-제외 .badge{background:var(--bg);color:var(--muted)}
+.thumb.s-제외 img{opacity:.4}
+.thumb.s-대기{border-color:var(--warn)}
+.thumb-btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.thumb-btns button{padding:5px 10px;font-size:13px}
 td.act{display:flex;gap:6px}
 td.act button{padding:5px 10px;font-size:13px}
 button.danger{color:var(--warn);border-color:var(--warn)}
@@ -91,6 +102,18 @@ button.danger{color:var(--warn);border-color:var(--warn)}
     <div id="status"></div>
   </div>
 
+  <div class="card human" id="imgCard" hidden>
+    <h2>사람 판독 — 손글씨·스캔 페이지</h2>
+    <p class="hint">글자 정보가 없어 프로그램이 읽을 수 없는 페이지입니다. 틀린 값이 자동으로 들어가지 않도록 <b>사람이 직접</b> 확인합니다.
+      한 쪽씩 보면서 위임장이면 내용을 입력하고, 아니면(투표용지·문자 캡처 등) '위임장 아님'을 누르세요. 누가 언제 판독했는지 엑셀에 기록됩니다.</p>
+    <div class="row">
+      <label>판독자 이름 <input type="text" id="reader" placeholder="예: 홍길동" autocomplete="off"></label>
+      <button id="startHuman">판독 시작</button>
+      <span id="humanCount" class="hint" style="margin:0"></span>
+    </div>
+    <div class="thumbs" id="thumbs" style="margin-top:14px"></div>
+  </div>
+
   <div class="card" id="resultCard" hidden>
     <div class="stats" id="stats"></div>
     <div class="row">
@@ -105,11 +128,6 @@ button.danger{color:var(--warn);border-color:var(--warn)}
     </div>
   </div>
 
-  <div class="card" id="imgCard" hidden>
-    <h2>글자가 없는 스캔·사진 페이지</h2>
-    <p class="hint">위임장인데 자동 선별되지 않았다면 '위임장으로 추가'를 누른 뒤 표에서 값을 직접 입력하세요.</p>
-    <div class="thumbs" id="thumbs" style="margin-top:10px"></div>
-  </div>
 </main>
 <dialog id="zoom"><img alt="페이지 확대"></dialog>
 
@@ -123,8 +141,9 @@ button.danger{color:var(--warn);border-color:var(--warn)}
       <div class="ed-scroll"><div id="edLoading">원본 불러오는 중…</div><img id="edImg" alt="원본 페이지"></div>
     </div>
     <form class="ed-form" id="edForm">
-      <h2>위임인 정보 입력</h2>
-      <p class="hint">왼쪽 원본을 보면서 입력하세요. 확대(＋) 버튼으로 손글씨를 크게 볼 수 있습니다.</p>
+      <h2 id="edHead">위임인 정보 입력</h2>
+      <p class="hint">왼쪽 원본을 보면서 입력하세요. 확대(＋) 버튼으로 손글씨를 크게 볼 수 있습니다. <span id="queueInfo"></span></p>
+      <label id="readerWrap">판독자 (기록용)<input id="f판독자" autocomplete="off" placeholder="판독하는 사람 이름"></label>
       <label>이름<input id="f성명" autocomplete="off" placeholder="예: 최영숙"></label>
       <label>호수<input id="f호수" autocomplete="off" inputmode="numeric" placeholder="예: 1206  (여러 개면 1526, 1703)"></label>
       <label>전화번호<input id="f연락처" autocomplete="off" inputmode="tel" placeholder="예: 01064101826"></label>
@@ -137,6 +156,7 @@ button.danger{color:var(--warn);border-color:var(--warn)}
         <button type="submit" class="ghost" id="saveOnly">저장</button>
         <button type="button" class="ghost" id="edCancel">취소</button>
       </div>
+      <button type="button" class="ghost danger" id="notWeimjang">이 페이지는 위임장 아님 (제외하고 다음)</button>
       <p class="hint">'호', 전화번호의 '-', 날짜 형식(2026-08-21)은 자동으로 맞춰집니다.</p>
     </form>
   </div>
@@ -280,9 +300,9 @@ async function handleFiles(files) {
         const thumb = canvas.toDataURL("image/jpeg", 0.8);
         let title = "";
         if (useOcr) { try { title = await ocrTitle(canvas); } catch (e) { title = ""; } }
-        const ip = { file: f.name, page: p, thumb, title, added: false };
-        imagePages.push(ip);
-        if (title.includes(kw)) { ip.added = true; const r = blankScan(f.name, p, title); r._added = true; recs.push(r); }
+        // 글자가 없는 페이지(손글씨·스캔·사진)는 자동 판독하지 않고 '사람 판독' 대기열로 보냄
+        imagePages.push({ file: f.name, page: p, thumb, title, status: "대기", rec: null,
+                          hint: title.includes(kw) ? "제목에 '" + kw + "' 보임" : "" });
         continue;
       }
       const title = titleOf(text);
@@ -322,16 +342,16 @@ async function handleFiles(files) {
     records.push(...recs);
   }
   sortRecords();
-  setStatus(`완료: 전체 ${totalPages}쪽 중 '${$("#keyword").value}' 제목 ${records.length}건`);
+  const pending = imagePages.length;
+  setStatus(`완료: 전체 ${totalPages}쪽 중 '${$("#keyword").value}' 제목 ${records.length}건 자동 판독` +
+    (pending ? `\n손글씨·스캔 페이지 ${pending}쪽은 아래 '사람 판독'에서 확인해 주세요.` : ""));
   render();
 }
-function blankScan(file, page, title) {
-  return { 파일: file, 쪽: page, 제목: title || "(스캔 페이지)", 판독: "수기/스캔", _scan: true };
-}
+const pendingPages = () => imagePages.filter(ip => ip.status === "대기");
+const ipOf = r => imagePages.find(ip => ip.rec === r);
 
 function review(r, mainAgent, unitCount) {
   const out = [];
-  if (r._scan) out.push("손글씨 – [입력] 버튼으로 원본 보며 입력");
   const miss = ["성명", "호수", "연락처", "수임인"].filter(k => !r[k]);
   if (miss.length) out.push("누락: " + miss.join(", "));
   if (mainAgent && r.수임인 && r.수임인 !== mainAgent) out.push(`수임인 상이(${r.수임인})`);
@@ -358,28 +378,27 @@ function render() {
   analyze();
   $("#resultCard").hidden = false;
   const warn = records.filter(r => r.검토).length;
-  $("#stats").innerHTML = [["전체 쪽", totalPages], ["선별된 위임장", records.length], ["검토 필요", warn], ["이상 없음", records.length - warn]]
-    .map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
+  const pend = pendingPages().length;
+  $("#stats").innerHTML = [["전체 쪽", totalPages], ["위임장", records.length], ["검토 필요", warn], ["사람 판독 대기", pend, pend > 0]]
+    .map(([k, v, hot]) => `<div class="stat${hot ? " hot" : ""}"><b>${v}</b><span>${k}</span></div>`).join("");
   const tb = $("#tbl tbody"); tb.innerHTML = "";
   records.forEach((r, i) => {
     const tr = document.createElement("tr");
     if (r.검토) tr.className = "warn";
     const cell = v => { const td = document.createElement("td"); td.textContent = v || ""; tr.appendChild(td); return td; };
     cell(String(i + 1)); cell(r.성명); cell(r.호수); cell(r.연락처); cell(r.수임인);
-    cell(r.작성일); cell(r.판독); cell(String(r.쪽));
+    cell(r.작성일); cell(r.판독자 ? `사람(${r.판독자})` : r.판독); cell(String(r.쪽));
     const note = cell([r.검토, r.메모].filter(Boolean).join(" / ")); note.className = "note";
     const act = cell(""); act.className = "act";
-    const eb = document.createElement("button");
-    eb.textContent = r._scan ? "입력" : "수정"; if (!r._scan) eb.className = "ghost";
-    eb.onclick = () => openEditor(r);
+    const ip = ipOf(r);
+    const eb = document.createElement("button"); eb.className = "ghost"; eb.textContent = "수정";
+    eb.onclick = () => openEditor(r, ip);
     act.appendChild(eb);
-    if (r._added) {
-      const db = document.createElement("button"); db.className = "ghost danger"; db.textContent = "삭제";
+    if (ip) {
+      const db = document.createElement("button"); db.className = "ghost danger"; db.textContent = "판독 취소";
       db.onclick = () => {
-        if (!confirm(`${r.쪽}쪽을 목록에서 뺄까요?`)) return;
-        records.splice(records.indexOf(r), 1);
-        const ip = imagePages.find(x => x.file === r.파일 && x.page === r.쪽); if (ip) ip.added = false;
-        render();
+        if (!confirm(`${r.쪽}쪽 판독 결과를 지우고 '사람 판독 대기'로 되돌릴까요?`)) return;
+        undoPage(ip);
       };
       act.appendChild(db);
     }
@@ -389,11 +408,19 @@ function render() {
 }
 
 /* ---------- 입력 창: 왼쪽 원본, 오른쪽 입력칸 ---------- */
-let editing = null, zoomLevel = 1;
-async function openEditor(r) {
-  editing = r;
+let editing = null, editingPage = null, zoomLevel = 1;
+/* r: 위임장 기록 / ip: 사람 판독 페이지(손글씨·스캔). ip만 있으면 새 기록 초안을 만듦 */
+async function openEditor(r, ip = null) {
+  if (!r) r = { 파일: ip.file, 쪽: ip.page, 제목: ip.title || "(손글씨·스캔 위임장)", 판독: "사람 판독" };
+  editing = r; editingPage = ip;
   const dlg = $("#editor");
-  $("#edTitle").textContent = `${r.파일} · ${r.쪽}쪽`;
+  $("#edTitle").textContent = `${r.파일} · ${r.쪽}쪽` + (ip ? " · 사람 판독" : "");
+  $("#edHead").textContent = ip ? "손글씨 위임장 판독" : "위임인 정보 수정";
+  $("#readerWrap").hidden = !ip;
+  $("#notWeimjang").hidden = !ip;
+  $("#f판독자").value = r.판독자 || readerName();
+  const left = pendingPages().filter(x => x !== ip).length;
+  $("#queueInfo").textContent = ip ? `이 페이지 다음으로 판독 대기 ${left}쪽` : "";
   const agent = r.수임인 || mainAgent();
   $("#f성명").value = r.성명 || "";
   $("#f호수").value = r.호수 || "";
@@ -406,7 +433,7 @@ async function openEditor(r) {
   $("#edLoading").hidden = false;
   zoomLevel = 1; applyZoom();
   if (!dlg.open) dlg.showModal();
-  setTimeout(() => $("#f성명").focus(), 0);
+  setTimeout(() => (ip && !$("#f판독자").value ? $("#f판독자") : $("#f성명")).focus(), 0);
   try {
     const page = await docs[r.파일].getPage(r.쪽);
     const c = await renderPage(page, 2);
@@ -420,8 +447,23 @@ $("#zOut").onclick = () => { zoomLevel = Math.max(0.5, zoomLevel - 0.25); applyZ
 function normUnits(s) {
   return (s.match(/\d{3,4}/g) || []).map(n => n + "호").join(", ");
 }
+function readerName() { try { return localStorage.getItem("weimjang.reader") || ""; } catch (e) { return ""; } }
+function rememberReader(n) { try { localStorage.setItem("weimjang.reader", n); } catch (e) {} }
+function nowText() {
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}`;
+}
 function saveEditor() {
-  const r = editing; if (!r) return;
+  const r = editing, ip = editingPage; if (!r) return false;
+  if (ip) {
+    const reader = $("#f판독자").value.trim();
+    if (!reader) { alert("판독자 이름을 입력해 주세요. (누가 판독했는지 기록으로 남깁니다)"); $("#f판독자").focus(); return false; }
+    if (!$("#f성명").value.trim()) { alert("이름을 입력해 주세요. 위임장이 아니면 '위임장 아님'을 누르세요."); $("#f성명").focus(); return false; }
+    r.판독자 = reader; r.판독일시 = nowText(); r.판독 = "사람 판독";
+    rememberReader(reader); $("#reader").value = reader;
+    ip.status = "위임장"; ip.rec = r;
+    if (!records.includes(r)) { records.push(r); sortRecords(); }
+  }
   r.성명 = $("#f성명").value.replace(/\s+/g, "");
   r.호수 = normUnits($("#f호수").value);
   r.연락처 = fmtPhone($("#f연락처").value.trim());
@@ -429,38 +471,82 @@ function saveEditor() {
   const d = $("#f작성일").value.trim();
   r.작성일 = d ? normDate(d) : "";
   r.메모 = $("#f메모").value.trim();
-  if (r._scan && r.성명 && r.호수) { r._scan = false; r.판독 = "직접 입력"; }
+  return true;
 }
+function goNext(wasPage) {
+  // 사람 판독 중이었으면 다음 대기 페이지, 아니면 다음 '검토 필요' 줄
+  if (wasPage) { const n = pendingPages()[0]; if (n) { openEditor(null, n); return true; } }
+  const i = records.indexOf(editing);
+  const n = records.slice(i + 1).find(x => x.검토) || records.find(x => x.검토 && x !== editing);
+  if (n) { openEditor(n, ipOf(n)); return true; }
+  return false;
+}
+function closeEditor() { editing = null; editingPage = null; $("#editor").close(); }
 $("#edForm").onsubmit = e => {
   e.preventDefault();
   const next = e.submitter && e.submitter.id === "saveNext";
-  saveEditor(); render();
-  if (next) {
-    const i = records.indexOf(editing);
-    const n = records.slice(i + 1).find(x => x.검토) || records.find(x => x.검토 && x !== editing);
-    if (n) { openEditor(n); return; }
-  }
-  editing = null; $("#editor").close();
+  const wasPage = !!editingPage;
+  if (!saveEditor()) return;
+  render();
+  if (next && goNext(wasPage)) return;
+  closeEditor();
 };
-$("#edCancel").onclick = () => { editing = null; $("#editor").close(); };
+$("#notWeimjang").onclick = () => {
+  const ip = editingPage; if (!ip) return;
+  const reader = $("#f판독자").value.trim();
+  if (!reader) { alert("판독자 이름을 입력해 주세요. (누가 제외했는지 기록으로 남깁니다)"); $("#f판독자").focus(); return; }
+  rememberReader(reader); $("#reader").value = reader;
+  markNot(ip, reader);
+  if (!goNext(true)) closeEditor();
+};
+$("#edCancel").onclick = closeEditor;
+
+function markNot(ip, reader) {
+  if (ip.rec) records.splice(records.indexOf(ip.rec), 1);
+  ip.rec = null; ip.status = "제외";
+  ip.판독자 = reader; ip.판독일시 = nowText();
+  render();
+}
+function undoPage(ip) {
+  if (ip.rec) records.splice(records.indexOf(ip.rec), 1);
+  ip.rec = null; ip.status = "대기"; ip.판독자 = ""; ip.판독일시 = "";
+  render();
+}
+
 function renderThumbs() {
   $("#imgCard").hidden = !imagePages.length;
+  const pend = pendingPages().length, done = imagePages.filter(x => x.status === "위임장").length,
+        excl = imagePages.filter(x => x.status === "제외").length;
+  $("#humanCount").innerHTML = `대기 <b>${pend}</b> · 위임장 입력 ${done} · 위임장 아님 ${excl}`;
+  $("#startHuman").disabled = !pend;
+  $("#startHuman").textContent = pend ? `판독 시작 (대기 ${pend}쪽)` : "모두 판독 완료";
   const box = $("#thumbs"); box.innerHTML = "";
   imagePages.forEach(ip => {
-    const d = document.createElement("div"); d.className = "thumb";
-    d.innerHTML = `<img src="${ip.thumb}" alt="${ip.page}쪽"><div>${ip.file.slice(0, 18)} · ${ip.page}쪽</div>
-      <div class="hint">${ip.title ? "제목: " + ip.title.replace(/</g, "&lt;") : "제목 미확인"}</div>`;
+    const d = document.createElement("div"); d.className = "thumb s-" + ip.status;
+    const who = ip.status === "위임장" ? ip.rec.성명 : "";
+    d.innerHTML = `<span class="badge">${ip.status === "대기" ? "판독 대기" : ip.status === "위임장" ? "입력 완료" : "위임장 아님"}</span>
+      <img src="${ip.thumb}" alt="${ip.page}쪽"><div>${ip.page}쪽${who ? " · " + who : ""}</div>
+      <div class="hint">${ip.hint || (ip.title ? "제목: " + ip.title.replace(/</g, "&lt;") : "")}</div>`;
     d.querySelector("img").onclick = () => { $("#zoom img").src = ip.thumb; $("#zoom").showModal(); };
-    const b = document.createElement("button"); b.className = "ghost"; b.style.marginTop = "6px";
-    b.textContent = ip.added ? "추가됨" : "위임장으로 추가"; b.disabled = ip.added;
-    b.onclick = () => {
-      ip.added = true;
-      const r = blankScan(ip.file, ip.page, ip.title); r._added = true;
-      records.push(r); sortRecords(); render(); openEditor(r);
-    };
-    d.appendChild(b); box.appendChild(d);
+    const btns = document.createElement("div"); btns.className = "thumb-btns";
+    const mk = (label, cls, fn) => { const b = document.createElement("button"); b.textContent = label; b.className = cls; b.onclick = fn; btns.appendChild(b); };
+    if (ip.status === "대기") {
+      mk("판독하기", "", () => openEditor(null, ip));
+      mk("위임장 아님", "ghost", () => {
+        const reader = $("#reader").value.trim();
+        if (!reader) { alert("위쪽 '판독자 이름'을 먼저 입력해 주세요."); $("#reader").focus(); return; }
+        rememberReader(reader); markNot(ip, reader);
+      });
+    } else {
+      if (ip.status === "위임장") mk("수정", "ghost", () => openEditor(ip.rec, ip));
+      mk("되돌리기", "ghost", () => undoPage(ip));
+    }
+    d.appendChild(btns); box.appendChild(d);
   });
 }
+$("#startHuman").onclick = () => { const n = pendingPages()[0]; if (n) openEditor(null, n); };
+$("#reader").value = readerName();
+$("#reader").onchange = () => rememberReader($("#reader").value.trim());
 $("#zoom").onclick = () => $("#zoom").close();
 
 /* ---------- 엑셀 ---------- */
@@ -468,23 +554,41 @@ function unitKey(r) { const m = (r.호수 || "").match(/\d+/); return m ? +m[0] 
 function contactsSheet() {
   const rows = [...records].sort((a, b) => unitKey(a) - unitKey(b))
     .map((r, i) => ({ No: i + 1, 이름: r.성명 || "", 호수: r.호수 || "", 전화번호: r.연락처 || "", 수임인: r.수임인 || "",
-      작성일: r.작성일 || "", 비고: [r.검토, r.메모].filter(Boolean).join(" / ") }));
-  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "이름", "호수", "전화번호", "수임인", "작성일", "비고"] });
-  ws["!cols"] = [5, 12, 18, 16, 12, 12, 40].map(w => ({ wch: w }));
+      작성일: r.작성일 || "", 판독: r.판독자 ? `사람 판독(${r.판독자})` : "자동",
+      비고: [r.검토, r.메모].filter(Boolean).join(" / ") }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "이름", "호수", "전화번호", "수임인", "작성일", "판독", "비고"] });
+  ws["!cols"] = [5, 12, 18, 16, 12, 12, 18, 40].map(w => ({ wch: w }));
   return ws;
 }
 function detailSheet() {
-  const cols = ["파일", "쪽", "제목", "판독", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토", "메모"];
+  const cols = ["파일", "쪽", "제목", "판독", "판독자", "판독일시", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토", "메모"];
   const rows = records.map(r => Object.fromEntries(cols.map(c => [c, r[c] ?? ""])));
   const ws = XLSX.utils.json_to_sheet(rows, { header: cols });
-  ws["!cols"] = [22, 5, 28, 10, 10, 10, 11, 40, 15, 16, 11, 10, 40, 10, 11, 19, 26, 40].map(w => ({ wch: w }));
+  ws["!cols"] = [22, 5, 28, 10, 10, 16, 10, 10, 11, 40, 15, 16, 11, 10, 40, 10, 11, 19, 26, 40, 30].map(w => ({ wch: w }));
+  return ws;
+}
+function humanSheet() {
+  const cols = ["파일", "쪽", "처리결과", "판독자", "판독일시", "이름", "호수", "전화번호", "메모"];
+  const rows = imagePages.map(ip => ({
+    파일: ip.file, 쪽: ip.page,
+    처리결과: ip.status === "대기" ? "미판독" : ip.status === "위임장" ? "위임장 입력" : "위임장 아님",
+    판독자: ip.rec ? ip.rec.판독자 : (ip.판독자 || ""), 판독일시: ip.rec ? ip.rec.판독일시 : (ip.판독일시 || ""),
+    이름: ip.rec?.성명 || "", 호수: ip.rec?.호수 || "", 전화번호: ip.rec?.연락처 || "", 메모: ip.rec?.메모 || "",
+  }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: cols });
+  ws["!cols"] = [22, 5, 12, 10, 16, 10, 16, 15, 30].map(w => ({ wch: w }));
   return ws;
 }
 function download(onlyContacts) {
   analyze();
+  const pend = pendingPages().length;
+  if (pend && !confirm(`아직 사람 판독을 안 한 손글씨·스캔 페이지가 ${pend}쪽 있습니다.\n이대로 저장하면 그 페이지의 위임인은 엑셀에 빠집니다. 그래도 저장할까요?`)) return;
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, contactsSheet(), "이름·호수·전화번호");
-  if (!onlyContacts) XLSX.utils.book_append_sheet(wb, detailSheet(), "위임장 목록");
+  if (!onlyContacts) {
+    XLSX.utils.book_append_sheet(wb, detailSheet(), "위임장 목록");
+    if (imagePages.length) XLSX.utils.book_append_sheet(wb, humanSheet(), "사람 판독 기록");
+  }
   const d = new Date(), stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
   XLSX.writeFile(wb, `위임장_판독결과_${stamp}.xlsx`);
 }
