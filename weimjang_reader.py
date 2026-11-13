@@ -107,8 +107,8 @@ def squash(s: str) -> str:
 
 def field(text: str, label: str, stop: str = r"$") -> str:
     """'라벨 : 값' 형태에서 값만 꺼냅니다. 라벨 글자 사이 공백을 허용합니다."""
-    lab = r"\s*".join(map(re.escape, label))
-    m = re.search(lab + r"\s*[:：]?\s*(.+?)\s*" + stop, text, flags=re.MULTILINE)
+    lab = r"[ \t]*".join(map(re.escape, label))  # 줄바꿈을 넘어가지 않음
+    m = re.search(lab + r"[ \t]*[:：]?[ \t]*(.+?)[ \t]*" + stop, text, flags=re.MULTILINE)
     return m.group(1).strip() if m else ""
 
 
@@ -153,7 +153,70 @@ def parse_weimjang(text: str) -> dict:
         info = m.group(1).strip()
         rec["수임인 정보"] = info
         rec["수임인"] = squash(info.split("/")[0])
+    fill_from_table(text, rec)
     return rec
+
+
+# 표 양식 대응: 값이 라벨과 다른 줄에 있을 때 '이 라벨 ~ 다음 라벨' 구간 전체에서 찾음
+LABELS = [("성명", r"^성명"), ("생년월일", r"^생년월일"), ("주소", r"^주소"),
+          ("연락처", r"^연락처"), ("호수", r"^소유\(점유\)호수|^소유호수|^호수"), ("작성일", r"^작성일")]
+LABEL_WORDS = re.compile(r"성명|생년월일|주소|연락처|소유\(점유\)호수|다실소유전부기재|작성일|위임인")
+
+
+def fill_from_table(text: str, r: dict) -> None:
+    lines = text.split("\n")
+    sq = [re.sub(r"[<>〈〉]", "", squash(l)) for l in lines]
+    idx: dict[str, int] = {}
+    for key, pat in LABELS:
+        for n, s in enumerate(sq):
+            if re.search(pat, s) and all(n > j for j in idx.values()):
+                idx[key] = n
+                break
+    keys = [k for k, _ in LABELS if k in idx]
+
+    def region(key):
+        if key not in idx:
+            return []
+        k = keys.index(key)
+        start = idx[keys[k - 1]] + 1 if k > 0 else max(0, idx[key] - 2)
+        end = idx[keys[k + 1]] - 1 if k < len(keys) - 1 else min(len(lines) - 1, idx[key] + 2)
+        return lines[start:end + 1]
+
+    def clean(l):
+        return re.sub(r"[:：]", " ", re.sub(r"\([^)]*\)?", " ", l))
+
+    if not r.get("성명"):
+        for l in region("성명"):
+            s = LABEL_WORDS.sub("", squash(clean(l)))
+            if re.fullmatch(r"[가-힣]{2,5}", s) and not GUIDE.search(s):
+                r["성명"] = s
+                break
+    if not r.get("소유(점유)호수"):
+        units = dict.fromkeys(f"{u}호" for u in re.findall(r"(\d{3,4})\s*호", " ".join(region("호수"))))
+        r["소유(점유)호수"] = ", ".join(units)
+    if not r.get("연락처"):
+        m = re.search(r"01\d[\s-]?\d{3,4}[\s-]?\d{4}", " ".join(region("연락처")))
+        if m:
+            r["연락처"] = squash(m.group())
+    for key in ("생년월일", "작성일"):
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", r.get(key, "")):
+            continue
+        m = re.search(r"\d{4}\s*[.\-/년]?\s*\d{1,2}\s*[.\-/월]?\s*\d{1,2}", " ".join(region(key)))
+        if m:
+            r[key] = norm_date(m.group())
+    a = " ".join(filter(None, (re.sub(r"^\s*주\s*소\s*[:：]?", "", l).strip() for l in region("주소"))))
+    a = re.sub(r"\s+", " ", a).strip()
+    cur = r.get("주소", "")
+    if a and (not cur or GUIDE.search(cur) or (len(a) > len(cur) and cur in a)):
+        r["주소"] = a
+    if not r.get("수임인") or re.search(r"성명|생년월일", r.get("수임인", "")):
+        at = re.search(r"수\s*임\s*인", text)
+        if at:
+            body = re.sub(r"성\s*명|생\s*년\s*월\s*일|주\s*소", " ", text[at.start():])
+            m = re.search(r"(?:^|[\s/:])([가-힣]{2,5})\s*/\s*(\d{4}\s*[.\-]?\s*\d{1,2}\s*[.\-]?\s*\d{1,2}\.?)\s*(?:/\s*([^\n]*))?", body)
+            if m:
+                r["수임인"] = m.group(1)
+                r["수임인 정보"] = " / ".join(x for x in (m.group(1), squash(m.group(2)), (m.group(3) or "").strip()) if x)
 
 
 def parse_audit(text: str) -> dict:

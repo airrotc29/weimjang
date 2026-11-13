@@ -210,8 +210,9 @@ const squash = s => (s || "").replace(/\s+/g, "");
 const GUIDE = /서명|날인|법인|인장|해당란|기재/;
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function field(text, label, stop = "$") {
-  const lab = [...label].map(esc).join("\\s*");
-  const m = text.match(new RegExp(lab + "\\s*[:：]?\\s*(.+?)\\s*" + stop, "m"));
+  // 줄바꿈을 넘어가지 않도록 공백은 [ \t] 만 허용 (라벨 뒤가 비면 다음 줄을 끌어오지 않음)
+  const lab = [...label].map(esc).join("[ \\t]*");
+  const m = text.match(new RegExp(lab + "[ \\t]*[:：]?[ \\t]*(.+?)[ \\t]*" + stop, "m"));
   return m ? m[1].trim() : "";
 }
 function normDate(s) {
@@ -242,7 +243,72 @@ function parseWeimjang(text) {
   else if (/위임인\s*\(\s*점유자\s*\)/.test(text)) r.위임인구분 = "점유자";
   const m = text.match(/수임인\s*\(대리인\)\s*\n\s*([^\n]+)/);
   if (m && m[1].includes("/")) { r.수임인정보 = m[1].trim(); r.수임인 = squash(m[1].split("/")[0]); }
+  fillFromTable(text, r);
   return r;
+}
+
+/* ---------- 표 양식 대응 ----------
+   표 모양 위임장은 값이 라벨과 다른 줄에 있는 경우가 많다
+   (예: '성 명' 줄에는 '(서명 또는 날인)' 안내만 있고 이름은 한 줄 아래).
+   그래서 '이 라벨 줄 ~ 다음 라벨 줄' 사이 구간 전체에서 값을 찾는다. */
+const LABELS = [
+  ["성명", /^성명/], ["생년월일", /^생년월일/], ["주소", /^주소/],
+  ["연락처", /^연락처/], ["호수", /^소유\(점유\)호수|^소유호수|^호수/], ["작성일", /^작성일/],
+];
+const LABEL_WORDS = /성명|생년월일|주소|연락처|소유\(점유\)호수|다실소유전부기재|작성일|위임인/g;
+function fillFromTable(text, r) {
+  const lines = text.split("\n");
+  const sq = lines.map(l => squash(l).replace(/[<>〈〉]/g, ""));
+  const idx = {};
+  for (const [key, re] of LABELS) {
+    const i = sq.findIndex((s, n) => re.test(s) && Object.values(idx).every(j => n > j));
+    if (i >= 0) idx[key] = i;
+  }
+  const keys = LABELS.map(l => l[0]).filter(k => k in idx);
+  const region = key => {  // 앞 라벨 줄 다음부터 뒤 라벨 줄 앞까지 (라벨 줄 포함)
+    const k = keys.indexOf(key); if (k < 0) return [];
+    const from = k > 0 ? idx[keys[k - 1]] + 1 : Math.max(0, idx[key] - 2);
+    const to = k < keys.length - 1 ? idx[keys[k + 1]] - 1 : Math.min(lines.length - 1, idx[key] + 2);
+    return lines.slice(from, to + 1);
+  };
+  const clean = l => l.replace(/\([^)]*\)?/g, " ").replace(/[:：]/g, " ");  // 괄호 안내 문구 제거
+
+  if (!r.성명) {
+    for (const l of region("성명")) {
+      const s = squash(clean(l)).replace(LABEL_WORDS, "");
+      if (/^[가-힣]{2,5}$/.test(s) && !GUIDE.test(s)) { r.성명 = s; break; }
+    }
+  }
+  if (!r.호수) {
+    const units = [...region("호수").join(" ").matchAll(/(\d{3,4})\s*호/g)].map(m => m[1] + "호");
+    r.호수 = [...new Set(units)].join(", ");
+  }
+  if (!r.연락처) {
+    const m = region("연락처").join(" ").match(/01\d[\s-]?\d{3,4}[\s-]?\d{4}/);
+    if (m) r.연락처 = fmtPhone(m[0]);
+  }
+  for (const key of ["생년월일", "작성일"]) {
+    if (r[key] && /^\d{4}-\d{2}-\d{2}$/.test(r[key])) continue;
+    const m = region(key).join(" ").match(/\d{4}\s*[.\-/년]?\s*\d{1,2}\s*[.\-/월]?\s*\d{1,2}/);
+    if (m) r[key] = normDate(m[0]);
+  }
+  {  // 주소가 두 줄 이상으로 나뉜 경우 구간 전체를 이어 붙임
+    const a = region("주소").map(l => l.replace(/^\s*주\s*소\s*[:：]?/, "").trim()).filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    const cur = r.주소 || "";
+    if (a && (!cur || GUIDE.test(cur) || (a.length > cur.length && a.includes(cur)))) r.주소 = a;
+  }
+  // 수임인: '수임인' 제목 뒤에서 '이름 / 생년월일 / 주소' 모양을 찾는다 (앞에 붙은 '성명/생년월일/주소' 제목은 무시)
+  if (!r.수임인 || /성명|생년월일/.test(r.수임인)) {
+    const at = text.search(/수\s*임\s*인/);
+    if (at >= 0) {
+      const body = text.slice(at).replace(/성\s*명|생\s*년\s*월\s*일|주\s*소/g, " ");  // 칸 제목 제거
+      const m = body.match(/(?:^|[\s/:])([가-힣]{2,5})\s*\/\s*(\d{4}\s*[.\-]?\s*\d{1,2}\s*[.\-]?\s*\d{1,2}\.?)\s*(?:\/\s*([^\n]*))?/);
+      if (m) {
+        r.수임인 = squash(m[1]);
+        r.수임인정보 = [squash(m[1]), squash(m[2]), (m[3] || "").trim()].filter(Boolean).join(" / ");
+      }
+    }
+  }
 }
 function parseAudit(text) {
   const o = {};
