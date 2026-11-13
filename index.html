@@ -50,6 +50,28 @@ h2{font-size:17px;margin:0 0 10px}
 dialog{border:0;padding:0;max-width:95vw;max-height:95vh;background:transparent}
 dialog img{max-width:95vw;max-height:92vh;display:block}
 dialog::backdrop{background:rgba(0,0,0,.7)}
+td.act{display:flex;gap:6px}
+td.act button{padding:5px 10px;font-size:13px}
+button.danger{color:var(--warn);border-color:var(--warn)}
+#editor{width:min(1200px,96vw);height:min(860px,94vh);background:var(--surface);color:var(--text);border-radius:12px}
+.ed{display:flex;height:100%}
+.ed-view{flex:1.4;display:flex;flex-direction:column;border-right:1px solid var(--line);min-width:0}
+.ed-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:13px;color:var(--muted)}
+.zoom-ctl{display:flex;align-items:center;gap:6px}
+.zoom-ctl button{padding:3px 10px}
+.ed-scroll{flex:1;overflow:auto;background:var(--bg);padding:10px}
+#edImg{display:block;max-width:none}
+#edLoading{color:var(--muted);padding:20px}
+.ed-form{flex:1;padding:18px;overflow:auto;display:flex;flex-direction:column;gap:12px;min-width:260px}
+.ed-form label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:14px}
+.ed-form input,.ed-form textarea{padding:10px;font-size:16px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);width:100%;font-family:inherit}
+.ed-form input:focus,.ed-form textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.ed-btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px}
+@media (max-width:760px){
+  .ed{flex-direction:column}
+  .ed-view{flex:none;height:45%;border-right:0;border-bottom:1px solid var(--line)}
+  .ed-form{min-width:0}
+}
 </style>
 </head>
 <body>
@@ -75,10 +97,10 @@ dialog::backdrop{background:rgba(0,0,0,.7)}
       <button id="dlAll">엑셀 내려받기</button>
       <button class="ghost" id="dlContacts">이름·호수·전화번호만</button>
     </div>
-    <p class="hint">표의 이름·호수·전화번호·수임인·비고 칸은 클릭해서 고칠 수 있습니다. 고친 값이 엑셀에 들어갑니다.</p>
+    <p class="hint">값을 고치거나 손글씨 위임장을 입력하려면 각 줄 오른쪽의 <b>[입력]/[수정]</b> 버튼을 누르세요. 원본을 보면서 입력할 수 있습니다.</p>
     <div class="table-wrap" style="margin-top:12px">
       <table id="tbl"><thead><tr>
-        <th>No</th><th>이름</th><th>호수</th><th>전화번호</th><th>수임인</th><th>작성일</th><th>판독</th><th>쪽</th><th>검토</th>
+        <th>No</th><th>이름</th><th>호수</th><th>전화번호</th><th>수임인</th><th>작성일</th><th>판독</th><th>쪽</th><th>검토</th><th></th>
       </tr></thead><tbody></tbody></table>
     </div>
   </div>
@@ -91,6 +113,35 @@ dialog::backdrop{background:rgba(0,0,0,.7)}
 </main>
 <dialog id="zoom"><img alt="페이지 확대"></dialog>
 
+<dialog id="editor">
+  <div class="ed">
+    <div class="ed-view">
+      <div class="ed-bar">
+        <span id="edTitle"></span>
+        <span class="zoom-ctl"><button type="button" class="ghost" id="zOut">－</button><span id="zoomPct">100%</span><button type="button" class="ghost" id="zIn">＋</button></span>
+      </div>
+      <div class="ed-scroll"><div id="edLoading">원본 불러오는 중…</div><img id="edImg" alt="원본 페이지"></div>
+    </div>
+    <form class="ed-form" id="edForm">
+      <h2>위임인 정보 입력</h2>
+      <p class="hint">왼쪽 원본을 보면서 입력하세요. 확대(＋) 버튼으로 손글씨를 크게 볼 수 있습니다.</p>
+      <label>이름<input id="f성명" autocomplete="off" placeholder="예: 최영숙"></label>
+      <label>호수<input id="f호수" autocomplete="off" inputmode="numeric" placeholder="예: 1206  (여러 개면 1526, 1703)"></label>
+      <label>전화번호<input id="f연락처" autocomplete="off" inputmode="tel" placeholder="예: 01064101826"></label>
+      <label>수임인<input id="f수임인" list="agents" autocomplete="off"></label>
+      <datalist id="agents"></datalist>
+      <label>작성일<input id="f작성일" autocomplete="off" inputmode="numeric" placeholder="예: 20260821  또는 2026.8.21"></label>
+      <label>메모<textarea id="f메모" rows="2" placeholder="예: 대필, 문자로 동의 확인"></textarea></label>
+      <div class="ed-btns">
+        <button type="submit" id="saveNext">저장 후 다음</button>
+        <button type="submit" class="ghost" id="saveOnly">저장</button>
+        <button type="button" class="ghost" id="edCancel">취소</button>
+      </div>
+      <p class="hint">'호', 전화번호의 '-', 날짜 형식(2026-08-21)은 자동으로 맞춰집니다.</p>
+    </form>
+  </div>
+</dialog>
+
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
@@ -100,7 +151,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const $ = s => document.querySelector(s);
 const HEADER = /^\(일련번호\s*\d+\)|^\[별지\]$|^\[\d{4}-\d{2}-\d{2}\]/;
 const SERIAL = /\(일련번호\s*(\d+)\)\s*\[(\d{4}-\d{2}-\d{2})\]/;
-let records = [], imagePages = [], totalPages = 0;
+let records = [], imagePages = [], totalPages = 0, docs = {};
 
 /* ---------- 텍스트 추출: pdf.js 조각을 줄 단위로 재조립 ---------- */
 async function pageText(page) {
@@ -209,11 +260,12 @@ async function renderPage(page, scale) {
 function setStatus(t) { $("#status").textContent = t; }
 
 async function handleFiles(files) {
-  records = []; imagePages = []; totalPages = 0;
+  records = []; imagePages = []; totalPages = 0; docs = {};
   const kw = $("#keyword").value.trim() || "위임장";
   const useOcr = $("#ocr").checked;
   for (const f of files) {
     const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
+    docs[f.name] = pdf;
     const audits = {}, recs = [];
     let near = { p: -99 };  // 직전 원본증명서·감사추적인증서 (같은 묶음 연결용)
     for (let p = 1; p <= pdf.numPages; p++) {
@@ -228,7 +280,7 @@ async function handleFiles(files) {
         if (useOcr) { try { title = await ocrTitle(canvas); } catch (e) { title = ""; } }
         const ip = { file: f.name, page: p, thumb, title, added: false };
         imagePages.push(ip);
-        if (title.includes(kw)) { ip.added = true; recs.push(blankScan(f.name, p, title)); }
+        if (title.includes(kw)) { ip.added = true; const r = blankScan(f.name, p, title); r._added = true; recs.push(r); }
         continue;
       }
       const title = titleOf(text);
@@ -262,7 +314,7 @@ async function handleFiles(files) {
     }
     records.push(...recs);
   }
-  records.sort((a, b) => a.파일.localeCompare(b.파일) || a.쪽 - b.쪽);
+  sortRecords();
   setStatus(`완료: 전체 ${totalPages}쪽 중 '${$("#keyword").value}' 제목 ${records.length}건`);
   render();
 }
@@ -272,7 +324,7 @@ function blankScan(file, page, title) {
 
 function review(r, mainAgent, unitCount) {
   const out = [];
-  if (r._scan) out.push("수기/스캔 – 원본 보고 직접 입력");
+  if (r._scan) out.push("손글씨 – [입력] 버튼으로 원본 보며 입력");
   const miss = ["성명", "호수", "연락처", "수임인"].filter(k => !r[k]);
   if (miss.length) out.push("누락: " + miss.join(", "));
   if (mainAgent && r.수임인 && r.수임인 !== mainAgent) out.push(`수임인 상이(${r.수임인})`);
@@ -289,7 +341,12 @@ function analyze() {
   records.forEach(r => r.검토 = review(r, mainAgent, unitCount));
 }
 
-const EDIT = ["성명", "호수", "연락처", "수임인"];
+function sortRecords() { records.sort((a, b) => a.파일.localeCompare(b.파일) || a.쪽 - b.쪽); }
+function mainAgent() {
+  const cnt = {}; records.forEach(r => r.수임인 && (cnt[r.수임인] = (cnt[r.수임인] || 0) + 1));
+  return Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+}
+
 function render() {
   analyze();
   $("#resultCard").hidden = false;
@@ -300,17 +357,85 @@ function render() {
   records.forEach((r, i) => {
     const tr = document.createElement("tr");
     if (r.검토) tr.className = "warn";
-    const cell = (v, key) => { const td = document.createElement("td"); td.textContent = v || "";
-      if (key) { td.contentEditable = "true"; td.onblur = () => { r[key] = td.textContent.trim(); if (r._scan && EDIT.every(k => r[k])) r._scan = false; render(); }; }
-      tr.appendChild(td); };
-    cell(String(i + 1)); EDIT.forEach(k => cell(r[k], k));
-    cell(r.작성일, "작성일"); cell(r.판독); cell(String(r.쪽));
-    const td = document.createElement("td"); td.className = "note"; td.textContent = r.검토; td.contentEditable = "true";
-    td.onblur = () => { r._issue = td.textContent.trim(); r._scan = false; render(); };
-    tr.appendChild(td); tb.appendChild(tr);
+    const cell = v => { const td = document.createElement("td"); td.textContent = v || ""; tr.appendChild(td); return td; };
+    cell(String(i + 1)); cell(r.성명); cell(r.호수); cell(r.연락처); cell(r.수임인);
+    cell(r.작성일); cell(r.판독); cell(String(r.쪽));
+    const note = cell([r.검토, r.메모].filter(Boolean).join(" / ")); note.className = "note";
+    const act = cell(""); act.className = "act";
+    const eb = document.createElement("button");
+    eb.textContent = r._scan ? "입력" : "수정"; if (!r._scan) eb.className = "ghost";
+    eb.onclick = () => openEditor(r);
+    act.appendChild(eb);
+    if (r._added) {
+      const db = document.createElement("button"); db.className = "ghost danger"; db.textContent = "삭제";
+      db.onclick = () => {
+        if (!confirm(`${r.쪽}쪽을 목록에서 뺄까요?`)) return;
+        records.splice(records.indexOf(r), 1);
+        const ip = imagePages.find(x => x.file === r.파일 && x.page === r.쪽); if (ip) ip.added = false;
+        render();
+      };
+      act.appendChild(db);
+    }
+    tb.appendChild(tr);
   });
   renderThumbs();
 }
+
+/* ---------- 입력 창: 왼쪽 원본, 오른쪽 입력칸 ---------- */
+let editing = null, zoomLevel = 1;
+async function openEditor(r) {
+  editing = r;
+  const dlg = $("#editor");
+  $("#edTitle").textContent = `${r.파일} · ${r.쪽}쪽`;
+  const agent = r.수임인 || mainAgent();
+  $("#f성명").value = r.성명 || "";
+  $("#f호수").value = r.호수 || "";
+  $("#f연락처").value = r.연락처 || "";
+  $("#f수임인").value = agent;
+  $("#f작성일").value = r.작성일 || "";
+  $("#f메모").value = r.메모 || "";
+  $("#agents").innerHTML = [...new Set(records.map(x => x.수임인).filter(Boolean))].map(a => `<option value="${a}">`).join("");
+  $("#edImg").removeAttribute("src");
+  $("#edLoading").hidden = false;
+  zoomLevel = 1; applyZoom();
+  if (!dlg.open) dlg.showModal();
+  setTimeout(() => $("#f성명").focus(), 0);
+  try {
+    const page = await docs[r.파일].getPage(r.쪽);
+    const c = await renderPage(page, 2);
+    if (editing === r) { $("#edImg").src = c.toDataURL("image/jpeg", 0.88); $("#edLoading").hidden = true; }
+  } catch (e) { $("#edLoading").textContent = "원본을 불러오지 못했습니다."; }
+}
+function applyZoom() { $("#edImg").style.width = (zoomLevel * 100) + "%"; $("#zoomPct").textContent = Math.round(zoomLevel * 100) + "%"; }
+$("#zIn").onclick = () => { zoomLevel = Math.min(3, zoomLevel + 0.25); applyZoom(); };
+$("#zOut").onclick = () => { zoomLevel = Math.max(0.5, zoomLevel - 0.25); applyZoom(); };
+
+function normUnits(s) {
+  return (s.match(/\d{3,4}/g) || []).map(n => n + "호").join(", ");
+}
+function saveEditor() {
+  const r = editing; if (!r) return;
+  r.성명 = $("#f성명").value.replace(/\s+/g, "");
+  r.호수 = normUnits($("#f호수").value);
+  r.연락처 = fmtPhone($("#f연락처").value.trim());
+  r.수임인 = $("#f수임인").value.replace(/\s+/g, "");
+  const d = $("#f작성일").value.trim();
+  r.작성일 = d ? normDate(d) : "";
+  r.메모 = $("#f메모").value.trim();
+  if (r._scan && r.성명 && r.호수) { r._scan = false; r.판독 = "직접 입력"; }
+}
+$("#edForm").onsubmit = e => {
+  e.preventDefault();
+  const next = e.submitter && e.submitter.id === "saveNext";
+  saveEditor(); render();
+  if (next) {
+    const i = records.indexOf(editing);
+    const n = records.slice(i + 1).find(x => x.검토) || records.find(x => x.검토 && x !== editing);
+    if (n) { openEditor(n); return; }
+  }
+  editing = null; $("#editor").close();
+};
+$("#edCancel").onclick = () => { editing = null; $("#editor").close(); };
 function renderThumbs() {
   $("#imgCard").hidden = !imagePages.length;
   const box = $("#thumbs"); box.innerHTML = "";
@@ -321,7 +446,11 @@ function renderThumbs() {
     d.querySelector("img").onclick = () => { $("#zoom img").src = ip.thumb; $("#zoom").showModal(); };
     const b = document.createElement("button"); b.className = "ghost"; b.style.marginTop = "6px";
     b.textContent = ip.added ? "추가됨" : "위임장으로 추가"; b.disabled = ip.added;
-    b.onclick = () => { ip.added = true; records.push(blankScan(ip.file, ip.page, ip.title)); records.sort((a, c) => a.파일.localeCompare(c.파일) || a.쪽 - c.쪽); render(); };
+    b.onclick = () => {
+      ip.added = true;
+      const r = blankScan(ip.file, ip.page, ip.title); r._added = true;
+      records.push(r); sortRecords(); render(); openEditor(r);
+    };
     d.appendChild(b); box.appendChild(d);
   });
 }
@@ -331,13 +460,14 @@ $("#zoom").onclick = () => $("#zoom").close();
 function unitKey(r) { const m = (r.호수 || "").match(/\d+/); return m ? +m[0] : 1e9; }
 function contactsSheet() {
   const rows = [...records].sort((a, b) => unitKey(a) - unitKey(b))
-    .map((r, i) => ({ No: i + 1, 이름: r.성명 || "", 호수: r.호수 || "", 전화번호: r.연락처 || "", 수임인: r.수임인 || "", 비고: r.검토 || "" }));
-  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "이름", "호수", "전화번호", "수임인", "비고"] });
-  ws["!cols"] = [5, 12, 18, 16, 12, 40].map(w => ({ wch: w }));
+    .map((r, i) => ({ No: i + 1, 이름: r.성명 || "", 호수: r.호수 || "", 전화번호: r.연락처 || "", 수임인: r.수임인 || "",
+      작성일: r.작성일 || "", 비고: [r.검토, r.메모].filter(Boolean).join(" / ") }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "이름", "호수", "전화번호", "수임인", "작성일", "비고"] });
+  ws["!cols"] = [5, 12, 18, 16, 12, 12, 40].map(w => ({ wch: w }));
   return ws;
 }
 function detailSheet() {
-  const cols = ["파일", "쪽", "제목", "판독", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토"];
+  const cols = ["파일", "쪽", "제목", "판독", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토", "메모"];
   const rows = records.map(r => Object.fromEntries(cols.map(c => [c, r[c] ?? ""])));
   const ws = XLSX.utils.json_to_sheet(rows, { header: cols });
   ws["!cols"] = [22, 5, 28, 10, 10, 10, 11, 40, 15, 16, 11, 10, 40, 10, 11, 19, 26, 40].map(w => ({ wch: w }));
