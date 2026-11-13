@@ -1,0 +1,6 @@
+# 개인정보 포함 파일 제외
+*.pdf
+*.xlsx
+*_페이지이미지/
+manual_overrides.json
+__pycache__/
