@@ -326,12 +326,20 @@ function parseAudit(text) {
 }
 
 /* ---------- OCR (선택) ---------- */
-let worker = null;
+let scheduler = null, ocrLoading = null, OCR_WORKERS = 1;
+/* OCR 일꾼 여러 개를 띄워 여러 쪽을 동시에 읽음 (CPU 코어 수에 맞춰 최대 4개) */
 async function ensureOcr() {
-  if (worker) return;
-  setStatus("OCR 엔진을 불러오는 중… (처음 한 번만, 약 10MB)");
-  await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
-  worker = await Tesseract.createWorker("kor");
+  if (scheduler) return;
+  if (!ocrLoading) ocrLoading = (async () => {
+    setStatus("OCR 엔진을 불러오는 중… (처음 한 번만, 약 10MB)");
+    await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
+    OCR_WORKERS = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+    const sch = Tesseract.createScheduler();
+    const workers = await Promise.all(Array.from({ length: OCR_WORKERS }, () => Tesseract.createWorker("kor")));
+    workers.forEach(w => sch.addWorker(w));
+    scheduler = sch;
+  })();
+  await ocrLoading;
 }
 async function ocrRegion(canvas, top, bottom) {
   await ensureOcr();
@@ -339,15 +347,20 @@ async function ocrRegion(canvas, top, bottom) {
   const crop = document.createElement("canvas");
   crop.width = canvas.width; crop.height = h;
   crop.getContext("2d").drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
-  const { data } = await worker.recognize(crop);
+  const { data } = await scheduler.addJob("recognize", crop);
   // 글자 단어별 확신도: 인쇄체는 높고(약 90) 손글씨·사진은 낮음(70 이하)
-  const words = (data.words || []).filter(w => /[가-힣0-9]/.test(w.text));
+  // 확신도는 위임인 표가 있는 페이지 위 30% 안의 단어로만 계산 (작은 글씨 약관 문단은 제외)
+  const cut30 = canvas.height * 0.30 - y;
+  const words = (data.words || []).filter(w => /[가-힣0-9]/.test(w.text) && w.bbox.y0 < cut30);
   const mean = words.length ? words.reduce((a, w) => a + w.confidence, 0) / words.length : 0;
   const low = words.length ? words.filter(w => w.confidence < 60).length / words.length : 1;
-  return { text: data.text || "", mean, low };
+  // 제목 영역(페이지 위 16%) 글자만 따로 모음 → 같은 곳을 두 번 OCR하지 않음
+  const cut = canvas.height * 0.16 - y;
+  const titleText = (data.lines || []).filter(l => l.bbox.y0 < cut).map(l => l.text).join("\n");
+  return { text: data.text || "", mean, low, titleText };
 }
 async function ocrText(canvas, top, bottom) { return (await ocrRegion(canvas, top, bottom)).text; }
-const isPrinted = o => o.mean >= 85 && o.low <= 0.10;
+const isPrinted = o => o.mean >= 80 && o.low <= 0.20;  // 인쇄체 약 85~90, 손글씨 약 70, 사진 약 40
 /* 문서 종류: 증명서류는 위쪽 30% 어디에 있어도 인정, 그 밖의 문서는 제목 영역(위 16%) 기준.
    (투표용지 본문의 '위임장을 제출하였고' 같은 문구로 오판하지 않도록 위임장은 제목 영역을 먼저 봄) */
 function classify(head, title, kw) {
@@ -418,122 +431,154 @@ async function renderPage(page, scale) {
 /* ---------- 처리 ---------- */
 function setStatus(t) { $("#status").textContent = t; }
 
+const HEAD = 0.38;  // 위임인 표·제목이 들어 있는 위쪽 영역
+/* 그림 페이지 1쪽 분석: 필요한 영역만 OCR (페이지 전체를 읽지 않음) */
+async function analyzeImage(pdf, fileName, p, kw) {
+  const page = await pdf.getPage(p);
+  let canvas = await renderPage(page, 2);
+  const ip = { file: fileName, page: p, thumb: thumbOf(canvas), title: "", status: "대기", rec: null, hint: "" };
+  const res = { p, ip, kind: "unknown" };
+  try {
+    let head = await ocrRegion(canvas, 0, HEAD);
+    res.kind = classify(squash(head.text), squash(head.titleText), squash(kw));
+    if (res.kind === "unknown") {  // 2회차: 해상도를 높여 다시
+      canvas = await renderPage(page, 3);
+      head = await ocrRegion(canvas, 0, HEAD);
+      res.kind = classify(squash(head.text), squash(head.titleText), squash(kw));
+    }
+    if (res.kind === "audit") {
+      res.info = parseAuditLoose(head.text + "\n" + await ocrText(canvas, HEAD, 0.8));  // 서명 기록 부분
+    } else if (res.kind === "cert") {
+      res.info = parseCertLoose(head.text + "\n" + await ocrText(canvas, HEAD, 0.6));
+    } else if (res.kind === "other") {
+      ip.title = lineWith(head.titleText, OTHER_DOC) || lineWith(head.text, OTHER_DOC) || bestTitle(head.titleText);
+    } else if (res.kind === "weimjang") {
+      ip.title = lineWith(head.text, new RegExp(squash(kw))) || kw;
+      res.printed = isPrinted(head);
+      res.conf = Math.round(head.mean);
+      if (res.printed) {
+        // OCR 2회: 1회차는 이미 읽은 위쪽 표, 2회차는 해상도를 바꿔 위쪽 표만 다시. 수임인 칸(아래)은 한 번만
+        const bottom = await ocrText(canvas, 0.72, 1);
+        const head2 = await ocrText(await renderPage(page, 2.6), 0, HEAD);
+        res.r1 = parseWeimjang(head.text + "\n" + bottom);
+        res.r2 = parseWeimjang(head2 + "\n" + bottom);
+      }
+    } else {
+      ip.title = bestTitle(head.titleText || head.text);
+    }
+  } catch (e) { res.kind = "error"; console.error(e); }
+  return res;
+}
+
 async function handleFiles(files) {
   records = []; imagePages = []; totalPages = 0; docs = {};
   let stoppedAt = null;
   const kw = $("#keyword").value.trim() || "위임장";
   const useOcr = $("#ocr").checked;
+  const t0 = Date.now();
   for (const f of files) {
     if (stopRequested && stoppedAt) break;
     const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
     docs[f.name] = pdf;
-    const audits = {}, recs = [];
-    let near = { p: -99 };  // 직전 원본증명서·감사추적인증서 (같은 묶음 연결용)
-    for (let p = 1; p <= pdf.numPages; p++) {
-      if (stopRequested) { stoppedAt = { file: f.name, page: p, total: pdf.numPages }; break; }
-      setStatus(`${f.name} — ${p}/${pdf.numPages}쪽 읽는 중…`);
+    const N = pdf.numPages, results = new Array(N + 1);
+    let done = 0, imgCount = 0;
+    const progress = () => setStatus(`${f.name} — ${done}/${N}쪽 처리 (그림 페이지 ${imgCount}쪽은 OCR로 읽는 중, 동시에 ${OCR_WORKERS}쪽씩)…`);
+
+    // ① 읽기: 글자 페이지는 바로, 그림 페이지는 여러 쪽을 동시에 OCR
+    const running = new Set();
+    for (let p = 1; p <= N; p++) {
+      if (stopRequested) { stoppedAt = { file: f.name, page: p, total: N }; break; }
       const page = await pdf.getPage(p);
       const text = await pageText(page);
       totalPages++;
-      if (!text.trim()) {
-        // 글자 정보가 없는 그림 페이지: OCR로 먼저 읽고, 증명서·인쇄 위임장은 자동 처리.
-        // 제목조차 못 읽는 페이지(손글씨·사진 등)만 '사람 판독'으로 보냄
-        const canvas = await renderPage(page, useOcr ? 2 : 1.2);
-        const ip = { file: f.name, page: p, thumb: thumbOf(canvas), title: "", status: "대기", rec: null, hint: "" };
-        imagePages.push(ip);
-        if (!useOcr) continue;
-        try {
-          setStatus(`${f.name} — ${p}/${pdf.numPages}쪽 그림 페이지 글자 읽는 중(OCR)…`);
-          // 1) 문서 종류 판단: 제목 영역(위 16%)과 위쪽 30%의 핵심 단어로. 모르겠으면 해상도를 높여 한 번 더(2회차)
-          let kind = "", head = null, title16 = "";
-          for (const cv of [canvas, null]) {
-            const c = cv || await renderPage(page, 3);
-            head = await ocrRegion(c, 0, 0.30);
-            title16 = await ocrText(c, 0, 0.16);
-            kind = classify(squash(head.text), squash(title16), squash(kw));
-            if (kind !== "unknown") break;
-          }
-          if (kind === "audit") {
-            const a = parseAuditLoose(await ocrText(canvas, 0, 1));
-            if (p - near.p <= 2) Object.assign(near, a, { p }); else near = Object.assign({ p }, a);
-            ip.title = "감사추적인증서"; ip.reason = "감사추적인증서"; ip.info = a; ip.status = "자동제외";
-          } else if (kind === "cert") {
-            const c = parseCertLoose(await ocrText(canvas, 0, 1));
-            near = Object.assign({ p }, c);
-            ip.title = "원본증명서"; ip.reason = "원본증명서"; ip.info = c; ip.status = "자동제외";
-          } else if (kind === "other") {
-            ip.title = lineWith(title16, OTHER_DOC) || lineWith(head.text, OTHER_DOC) || bestTitle(title16);
-            ip.status = "자동제외"; ip.reason = "위임장 아님 (" + ip.title + ")";
-          } else if (kind === "weimjang") {
-            ip.title = lineWith(head.text, new RegExp(squash(kw))) || kw;
-            if (!isPrinted(head)) {
-              // 손글씨: OCR 값은 틀리기 쉬워 미리 채우지도 않음 → 사람이 처음부터 판독
-              ip.hint = `위임장 – 손글씨로 보여 사람 판독 필요 (OCR 확신도 ${Math.round(head.mean)})`;
-            } else {
-              // 2) 인쇄 위임장: 해상도를 바꿔 OCR 2회 → 이름·호수·전화번호가 두 번 다 같아야 자동 판독
-              const r1 = parseWeimjang(await ocrText(canvas, 0, 1));
-              const r2 = parseWeimjang(await ocrText(await renderPage(page, 3), 0, 1));
-              for (const r of [r1, r2]) { Object.assign(r, { 파일: f.name, 쪽: p, 제목: ip.title, 판독: "OCR" }); linkNear(r, near); }
-              near = { p: -99 };
-              const diff = ["성명", "호수", "연락처"].filter(k => (r1[k] || "") !== (r2[k] || ""));
-              const valid = /^[가-힣]{2,5}$/.test(r1.성명 || "") && r1.호수 && /^01\d-\d{3,4}-\d{4}$/.test(r1.연락처 || "");
-              if (!diff.length && valid) {
-                r1._ocr = "인쇄 스캔본 OCR 2회 일치 – 원본 대조 권장";
-                ip.status = "위임장"; ip.rec = r1; ip.auto = true; recs.push(r1);
-              } else {
-                ip.draft = r1;
-                ip.hint = diff.length
-                  ? "OCR 2회 결과가 다름 → 사람 확인: " + diff.map(k => `${k}(${r1[k] || "?"} / ${r2[k] || "?"})`).join(", ")
-                  : "인쇄 위임장 – 일부 항목을 못 읽어 사람 확인 필요 (읽은 값은 미리 채워 둠)";
-              }
-            }
-          } else {
-            ip.title = bestTitle(title16);
-            ip.hint = "문서 종류를 알 수 없음 (OCR 2회) – 사람 확인 필요";
-          }
-        } catch (e) { ip.hint = "OCR 실패 – 사람 확인 필요"; console.error(e); }
+      if (text.trim()) { results[p] = { p, text }; done++; progress(); continue; }
+      if (!useOcr) {
+        const c = await renderPage(page, 1.2);
+        results[p] = { p, kind: "unknown", ip: { file: f.name, page: p, thumb: thumbOf(c), title: "", status: "대기", rec: null, hint: "OCR 꺼짐 – 사람 확인 필요" } };
+        done++; continue;
+      }
+      imgCount++;
+      await ensureOcr();
+      const job = analyzeImage(pdf, f.name, p, kw).then(r => { results[p] = r; done++; progress(); running.delete(job); });
+      running.add(job);
+      if (running.size >= OCR_WORKERS + 1) await Promise.race(running);
+    }
+    await Promise.all(running);
+
+    // ② 연결: 쪽 순서대로 원본증명서 → 감사추적인증서 → 위임장 묶음을 이어 붙임
+    const recs = [];
+    let near = { p: -99 };
+    for (let p = 1; p <= N; p++) {
+      const it = results[p]; if (!it) continue;
+      if (it.text !== undefined) {
+        const text = it.text, title = titleOf(text);
+        const serial = text.match(SERIAL);
+        const cert = text.match(/증명서\s*일련번호\s*(\d+)/);
+        if (cert) {
+          const t = text.match(/증명서\s*요청시간\s*(\d{4}-\d{2}-\d{2})/);
+          near = { p, 일련번호: cert[1], 발급일: t ? t[1] : "" };
+        }
+        if (/수신자/.test(text) && /서명 완료/.test(text)) {
+          const a = parseAudit(text);
+          if (p - near.p <= 2) Object.assign(near, a, { p }); else near = Object.assign({ p }, a);
+        }
+        if (!title.includes(kw)) continue;
+        const r = parseWeimjang(text);
+        Object.assign(r, { 파일: f.name, 쪽: p, 제목: title, 판독: "텍스트" });
+        if (serial) { r.일련번호 = serial[1]; r.발급일 = serial[2]; }
+        else linkNear(r, near);
+        near = { p: -99 };
+        recs.push(r);
         continue;
       }
-      const title = titleOf(text);
-      const serial = text.match(SERIAL);
-      const cert = text.match(/증명서\s*일련번호\s*(\d+)/);
-      if (cert) {
-        const t = text.match(/증명서\s*요청시간\s*(\d{4}-\d{2}-\d{2})/);
-        near = { p, 일련번호: cert[1], 발급일: t ? t[1] : "" };
-      }
-      const isAudit = /수신자/.test(text) && /서명 완료/.test(text);
-      if (isAudit) {
-        const a = parseAudit(text);
-        if (serial) audits[serial[1]] = a;
-        if (p - near.p <= 2) Object.assign(near, a, { p }); else near = Object.assign({ p }, a);
-      }
-      if (!title.includes(kw)) continue;
-      const r = parseWeimjang(text);
-      Object.assign(r, { 파일: f.name, 쪽: p, 제목: title, 판독: "텍스트" });
-      if (serial) { r.일련번호 = serial[1]; r.발급일 = serial[2]; }
-      else linkNear(r, near);  // 머리말이 안 읽히면 바로 앞 증명서 묶음과 연결
-      near = { p: -99 };
-      recs.push(r);
-    }
-    for (const r of recs) {
-      const a = audits[r.일련번호];
-      if (a) {
-        r.서명완료 = a.서명완료; r.발송자 = a.발송자;
-        if (a.서명자 && !r.성명) { r.성명 = a.서명자; r._issue = "이름은 감사추적인증서 서명자에서 가져옴"; }
-        else if (a.서명자 && r.성명 && a.서명자 !== r.성명) r._issue = `감사추적 서명자(${a.서명자}) 불일치`;
+      const ip = it.ip; imagePages.push(ip);
+      if (it.kind === "audit") {
+        if (p - near.p <= 2) Object.assign(near, it.info, { p }); else near = Object.assign({ p }, it.info);
+        Object.assign(ip, { title: "감사추적인증서", reason: "감사추적인증서", info: it.info, status: "자동제외" });
+      } else if (it.kind === "cert") {
+        near = Object.assign({ p }, it.info);
+        Object.assign(ip, { title: "원본증명서", reason: "원본증명서", info: it.info, status: "자동제외" });
+      } else if (it.kind === "other") {
+        Object.assign(ip, { status: "자동제외", reason: "위임장 아님 (" + ip.title + ")" });
+      } else if (it.kind === "weimjang") {
+        if (!it.printed) {
+          ip.hint = `위임장 – 손글씨로 보여 사람 판독 필요 (OCR 확신도 ${it.conf})`;
+        } else {
+          const { r1, r2 } = it;
+          for (const r of [r1, r2]) { Object.assign(r, { 파일: f.name, 쪽: p, 제목: ip.title, 판독: "OCR" }); linkNear(r, near); }
+          // 이름은 감사추적인증서 서명자가 세 번째 근거: OCR 두 번 중 하나라도 서명자와 같으면 그 이름으로 (3개 중 2개 일치)
+          const signer = p - near.p <= 2 ? near.서명자 : "";
+          if (signer && (r1.성명 === signer || r2.성명 === signer)) r1.성명 = r2.성명 = signer;
+          const diff = ["성명", "호수", "연락처"].filter(k => (r1[k] || "") !== (r2[k] || ""));
+          const valid = /^[가-힣]{2,5}$/.test(r1.성명 || "") && r1.호수 && /^01\d-\d{3,4}-\d{4}$/.test(r1.연락처 || "");
+          if (!diff.length && valid) {
+            r1._ocr = "인쇄 스캔본 OCR 2회 일치 – 원본 대조 권장";
+            Object.assign(ip, { status: "위임장", rec: r1, auto: true }); recs.push(r1);
+          } else {
+            ip.draft = r1;
+            ip.hint = diff.length
+              ? "OCR 2회 결과가 다름 → 사람 확인: " + diff.map(k => `${k}(${r1[k] || "?"} / ${r2[k] || "?"})`).join(", ")
+              : "인쇄 위임장 – 일부 항목을 못 읽어 사람 확인 필요 (읽은 값은 미리 채워 둠)";
+          }
+        }
+        near = { p: -99 };
+      } else if (it.kind === "error") {
+        ip.hint = "OCR 실패 – 사람 확인 필요";
+      } else if (!ip.hint) {
+        ip.hint = "문서 종류를 알 수 없음 (OCR 2회) – 사람 확인 필요";
       }
     }
     records.push(...recs);
   }
   sortRecords();
-  const pending = pendingPages().length;
+  const pending = pendingPages().length, secs = Math.round((Date.now() - t0) / 1000);
   if (stoppedAt) {
-    setStatus(`중지됨: ${stoppedAt.file} ${stoppedAt.page - 1}/${stoppedAt.total}쪽까지 처리했습니다. ` +
+    setStatus(`중지됨: ${stoppedAt.file} ${stoppedAt.page - 1}/${stoppedAt.total}쪽까지 처리했습니다 (${secs}초). ` +
       `지금까지 읽은 ${records.length}건은 아래에서 확인·저장할 수 있습니다.\n나머지 쪽을 읽으려면 파일을 다시 넣어 주세요.`);
     render(); return;
   }
-  setStatus(`완료: 전체 ${totalPages}쪽 중 '${$("#keyword").value}' 제목 ${records.length}건 자동 판독` +
-    (pending ? `\n손글씨·스캔 페이지 ${pending}쪽은 아래에서 사람이 판독해 주세요.` : ""));
+  setStatus(`완료 (${secs}초): 전체 ${totalPages}쪽 중 '${$("#keyword").value}' ${records.length}건 자동 판독` +
+    (pending ? `\n사람이 판독할 페이지 ${pending}쪽은 아래에서 확인해 주세요.` : ""));
   render();
 }
 const pendingPages = () => imagePages.filter(ip => ip.status === "대기");
