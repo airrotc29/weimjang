@@ -41,6 +41,7 @@ from openpyxl.utils import get_column_letter
 # ---------------------------------------------------------------------------
 HEADER_LINE = re.compile(r"^\(일련번호\s*\d+\)|^\[별지\]$|^\[\d{4}-\d{2}-\d{2}\]")
 SERIAL = re.compile(r"\(일련번호\s*(\d+)\)\s*\[(\d{4}-\d{2}-\d{2})\]")
+GUIDE = re.compile(r"서명|날인|법인|인장|해당란|기재")
 OCR_TITLE_CROP = 0.12  # 스캔 페이지에서 제목을 찾을 상단 영역 비율
 
 COLUMNS = [
@@ -129,6 +130,8 @@ def norm_date(s: str) -> str:
 def parse_weimjang(text: str) -> dict:
     rec: dict[str, str] = {}
     rec["성명"] = squash(field(text, "성명", r"(?:\(서명|\(인|$)"))
+    if GUIDE.search(rec["성명"]) or len(rec["성명"]) > 20:  # 양식 안내 문구는 이름이 아님
+        rec["성명"] = ""
     rec["생년월일"] = norm_date(field(text, "생년월일", r"(?:\(|$)"))
     rec["주소"] = re.sub(r"\s+", " ", field(text, "주소"))
     rec["연락처"] = squash(field(text, "연락처"))
@@ -222,7 +225,10 @@ def process_pdf(pdf_path: Path, keyword: str, use_ocr: bool, img_dir: Path | Non
         if a:
             rec["전자서명 완료일시"] = a.get("전자서명 완료일시", "")
             rec["발송자"] = a.get("발송자", "")
-            if a.get("서명자(감사추적)") and rec.get("성명") and a["서명자(감사추적)"] != rec["성명"]:
+            if a.get("서명자(감사추적)") and not rec.get("성명"):
+                rec["성명"] = a["서명자(감사추적)"]
+                rec.setdefault("_issues", []).append("이름은 감사추적인증서 서명자에서 가져옴")
+            elif a.get("서명자(감사추적)") and rec.get("성명") and a["서명자(감사추적)"] != rec["성명"]:
                 rec.setdefault("_issues", []).append(f"감사추적 서명자({a['서명자(감사추적)']})와 성명 불일치")
     return pages, records
 

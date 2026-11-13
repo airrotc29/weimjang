@@ -187,6 +187,7 @@ function titleOf(text) {
 
 /* ---------- 항목 판독 ---------- */
 const squash = s => (s || "").replace(/\s+/g, "");
+const GUIDE = /서명|날인|법인|인장|해당란|기재/;
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 function field(text, label, stop = "$") {
   const lab = [...label].map(esc).join("\\s*");
@@ -210,6 +211,7 @@ function fmtPhone(s) {
 function parseWeimjang(text) {
   const r = {};
   r.성명 = squash(field(text, "성명", "(?:\\(서명|\\(인|$)"));
+  if (GUIDE.test(r.성명) || r.성명.length > 20) r.성명 = "";  // 양식 안내 문구는 이름이 아님
   r.생년월일 = normDate(field(text, "생년월일", "(?:\\(|$)"));
   r.주소 = field(text, "주소").replace(/\s+/g, " ");
   r.연락처 = fmtPhone(squash(field(text, "연락처")));
@@ -303,14 +305,19 @@ async function handleFiles(files) {
       else if (p - near.p <= 2) {  // 머리말이 안 읽히면 바로 앞 증명서 묶음과 연결
         r.일련번호 = near.일련번호 || ""; r.발급일 = near.발급일 || "";
         r.서명완료 = near.서명완료 || ""; r.발송자 = near.발송자 || "";
-        if (near.서명자 && r.성명 && near.서명자 !== r.성명) r._issue = `감사추적 서명자(${near.서명자}) 불일치`;
+        if (near.서명자 && !r.성명) { r.성명 = near.서명자; r._issue = "이름은 감사추적인증서 서명자에서 가져옴"; }
+        else if (near.서명자 && r.성명 && near.서명자 !== r.성명) r._issue = `감사추적 서명자(${near.서명자}) 불일치`;
       }
       near = { p: -99 };
       recs.push(r);
     }
     for (const r of recs) {
       const a = audits[r.일련번호];
-      if (a) { r.서명완료 = a.서명완료; r.발송자 = a.발송자; if (a.서명자 && r.성명 && a.서명자 !== r.성명) r._issue = `감사추적 서명자(${a.서명자}) 불일치`; }
+      if (a) {
+        r.서명완료 = a.서명완료; r.발송자 = a.발송자;
+        if (a.서명자 && !r.성명) { r.성명 = a.서명자; r._issue = "이름은 감사추적인증서 서명자에서 가져옴"; }
+        else if (a.서명자 && r.성명 && a.서명자 !== r.성명) r._issue = `감사추적 서명자(${a.서명자}) 불일치`;
+      }
     }
     records.push(...recs);
   }
