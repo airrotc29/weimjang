@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>위임장 판독기</title>
+<style>
+:root{
+  --bg:#f6f7f9;--surface:#fff;--text:#1b1f24;--muted:#5d6670;--line:#dde1e6;
+  --accent:#1f4e78;--accent-ink:#fff;--warn-bg:#fdf0e6;--warn:#9a4a0b;--ok:#1d6b3a;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#14171b;--surface:#1c2026;--text:#e6e9ed;--muted:#9aa3ad;--line:#2e343c;
+  --accent:#6fa8dc;--accent-ink:#0d1520;--warn-bg:#3a2717;--warn:#f0b07a;--ok:#7fd19b;}}
+:root[data-theme="dark"]{
+  --bg:#14171b;--surface:#1c2026;--text:#e6e9ed;--muted:#9aa3ad;--line:#2e343c;
+  --accent:#6fa8dc;--accent-ink:#0d1520;--warn-bg:#3a2717;--warn:#f0b07a;--ok:#7fd19b;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif}
+main{max-width:1100px;margin:0 auto;padding:28px 16px 60px}
+h1{font-size:24px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:28px;text-align:center;cursor:pointer}
+.drop.over{border-color:var(--accent)}
+.row{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-top:12px}
+label{color:var(--muted);font-size:14px}
+input[type=text]{padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);width:110px}
+button{padding:8px 14px;border:0;border-radius:6px;background:var(--accent);color:var(--accent-ink);font-weight:600;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent);border:1px solid var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+#status{color:var(--muted);font-size:14px;margin-top:10px;white-space:pre-line}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:14px}
+th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top;white-space:nowrap}
+th{color:var(--muted);font-weight:600}
+td[contenteditable]{outline:none;border-radius:4px}
+td[contenteditable]:focus{background:var(--bg);box-shadow:inset 0 0 0 1px var(--accent)}
+tr.warn td{background:var(--warn-bg)}
+.note{color:var(--warn);font-size:13px;white-space:normal;min-width:180px}
+.stats{display:flex;gap:22px;flex-wrap:wrap}
+.stat b{display:block;font-size:22px}
+.stat span{color:var(--muted);font-size:13px}
+.thumbs{display:flex;gap:12px;flex-wrap:wrap}
+.thumb{border:1px solid var(--line);border-radius:8px;padding:8px;width:170px;font-size:13px}
+.thumb img{width:100%;border-radius:4px;display:block;margin-bottom:6px;cursor:zoom-in}
+h2{font-size:17px;margin:0 0 10px}
+.hint{color:var(--muted);font-size:13px;margin:6px 0 0}
+dialog{border:0;padding:0;max-width:95vw;max-height:95vh;background:transparent}
+dialog img{max-width:95vw;max-height:92vh;display:block}
+dialog::backdrop{background:rgba(0,0,0,.7)}
+</style>
+</head>
+<body>
+<main>
+  <h1>위임장 판독기</h1>
+  <p class="sub">PDF에서 <b>제목에 '위임장'이 들어간 페이지</b>만 골라 이름·호수·전화번호·수임인을 엑셀로 정리합니다.
+    파일은 서버로 전송되지 않고 이 브라우저 안에서만 처리됩니다.</p>
+
+  <div class="card">
+    <div class="drop" id="drop">PDF 파일을 여기에 끌어 놓거나 <u>클릭해서 선택</u>하세요 (여러 개 가능)
+      <input type="file" id="file" accept="application/pdf" multiple hidden>
+    </div>
+    <div class="row">
+      <label>제목 키워드 <input type="text" id="keyword" value="위임장"></label>
+      <label><input type="checkbox" id="ocr"> 스캔 페이지 OCR로 제목 찾기 (느림, 한국어 데이터 약 10MB 내려받음)</label>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="card" id="resultCard" hidden>
+    <div class="stats" id="stats"></div>
+    <div class="row">
+      <button id="dlAll">엑셀 내려받기</button>
+      <button class="ghost" id="dlContacts">이름·호수·전화번호만</button>
+    </div>
+    <p class="hint">표의 이름·호수·전화번호·수임인·비고 칸은 클릭해서 고칠 수 있습니다. 고친 값이 엑셀에 들어갑니다.</p>
+    <div class="table-wrap" style="margin-top:12px">
+      <table id="tbl"><thead><tr>
+        <th>No</th><th>이름</th><th>호수</th><th>전화번호</th><th>수임인</th><th>작성일</th><th>판독</th><th>쪽</th><th>검토</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+  </div>
+
+  <div class="card" id="imgCard" hidden>
+    <h2>글자가 없는 스캔·사진 페이지</h2>
+    <p class="hint">위임장인데 자동 선별되지 않았다면 '위임장으로 추가'를 누른 뒤 표에서 값을 직접 입력하세요.</p>
+    <div class="thumbs" id="thumbs" style="margin-top:10px"></div>
+  </div>
+</main>
+<dialog id="zoom"><img alt="페이지 확대"></dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const $ = s => document.querySelector(s);
+const HEADER = /^\(일련번호\s*\d+\)|^\[별지\]$|^\[\d{4}-\d{2}-\d{2}\]/;
+const SERIAL = /\(일련번호\s*(\d+)\)\s*\[(\d{4}-\d{2}-\d{2})\]/;
+let records = [], imagePages = [], totalPages = 0;
+
+/* ---------- 텍스트 추출: pdf.js 조각을 줄 단위로 재조립 ---------- */
+async function pageText(page) {
+  const tc = await page.getTextContent();
+  const items = tc.items.filter(i => i.str && i.str.trim() !== "" || i.str === " ")
+    .map(i => ({ s: i.str, x: i.transform[4], y: i.transform[5], w: i.width, h: Math.abs(i.transform[3]) || 10 }));
+  if (!items.length) return "";
+  items.sort((a, b) => b.y - a.y || a.x - b.x);
+  const lines = [];
+  for (const it of items) {
+    const ln = lines.find(l => Math.abs(l.y - it.y) < Math.max(2.5, it.h * 0.4));
+    ln ? ln.items.push(it) : lines.push({ y: it.y, items: [it] });
+  }
+  lines.sort((a, b) => b.y - a.y);
+  return lines.map(l => {
+    l.items.sort((a, b) => a.x - b.x);
+    let out = "", end = null;
+    for (const it of l.items) {
+      if (end !== null && it.x - end > it.h * 0.25 && !out.endsWith(" ")) out += " ";
+      out += it.s; end = it.x + it.w;
+    }
+    return out.replace(/\s+/g, " ").trim();
+  }).filter(Boolean).join("\n");
+}
+
+function titleOf(text) {
+  for (const raw of text.split("\n")) {
+    const l = raw.trim();
+    if (l && !HEADER.test(l)) return l;
+  }
+  return "";
+}
+
+/* ---------- 항목 판독 ---------- */
+const squash = s => (s || "").replace(/\s+/g, "");
+const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+function field(text, label, stop = "$") {
+  const lab = [...label].map(esc).join("\\s*");
+  const m = text.match(new RegExp(lab + "\\s*[:：]?\\s*(.+?)\\s*" + stop, "m"));
+  return m ? m[1].trim() : "";
+}
+function normDate(s) {
+  const d = (squash(s).match(/\d+/g) || []);
+  let y, m, dd;
+  if (d.length >= 3) [y, m, dd] = d;
+  else if (d.join("").length === 8) { const j = d.join(""); y = j.slice(0, 4); m = j.slice(4, 6); dd = j.slice(6); }
+  else return squash(s);
+  return `${y.padStart(4, "0")}-${m.padStart(2, "0")}-${dd.padStart(2, "0")}`;
+}
+function fmtPhone(s) {
+  const d = (s || "").replace(/\D/g, "");
+  if (d.length === 11) return `${d.slice(0, 3)}-${d.slice(3, 7)}-${d.slice(7)}`;
+  if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
+  return s || "";
+}
+function parseWeimjang(text) {
+  const r = {};
+  r.성명 = squash(field(text, "성명", "(?:\\(서명|\\(인|$)"));
+  r.생년월일 = normDate(field(text, "생년월일", "(?:\\(|$)"));
+  r.주소 = field(text, "주소").replace(/\s+/g, " ");
+  r.연락처 = fmtPhone(squash(field(text, "연락처")));
+  const units = [...field(text, "소유(점유)호수").matchAll(/(\d{3,4})\s*호/g)].map(m => m[1] + "호");
+  r.호수 = units.join(", ");
+  r.작성일 = normDate(field(text, "작성일"));
+  if (/위임인\s*\(\s*소유자\s*\)/.test(text)) r.위임인구분 = "구분소유자";
+  else if (/위임인\s*\(\s*점유자\s*\)/.test(text)) r.위임인구분 = "점유자";
+  const m = text.match(/수임인\s*\(대리인\)\s*\n\s*([^\n]+)/);
+  if (m && m[1].includes("/")) { r.수임인정보 = m[1].trim(); r.수임인 = squash(m[1].split("/")[0]); }
+  return r;
+}
+function parseAudit(text) {
+  const o = {};
+  let m = text.match(/\((\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\)\s*수신자\s*(\S+?)님이 문서를 서명 완료/);
+  if (m) { o.서명완료 = m[1]; o.서명자 = m[2]; }
+  m = text.match(/^(.+관리인.+)$/m);
+  if (m) o.발송자 = m[1].trim();
+  return o;
+}
+
+/* ---------- OCR (선택) ---------- */
+let worker = null;
+async function ocrTitle(canvas) {
+  if (!worker) {
+    setStatus("OCR 엔진을 불러오는 중… (처음 한 번만)");
+    await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
+    worker = await Tesseract.createWorker("kor");
+  }
+  const crop = document.createElement("canvas");
+  crop.width = canvas.width; crop.height = Math.round(canvas.height * 0.12);
+  crop.getContext("2d").drawImage(canvas, 0, 0);
+  const { data } = await worker.recognize(crop);
+  return titleOf(data.text);
+}
+function loadScript(src) {
+  return new Promise((ok, no) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+}
+async function renderPage(page, scale) {
+  const vp = page.getViewport({ scale });
+  const c = document.createElement("canvas");
+  c.width = vp.width; c.height = vp.height;
+  await page.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+  return c;
+}
+
+/* ---------- 처리 ---------- */
+function setStatus(t) { $("#status").textContent = t; }
+
+async function handleFiles(files) {
+  records = []; imagePages = []; totalPages = 0;
+  const kw = $("#keyword").value.trim() || "위임장";
+  const useOcr = $("#ocr").checked;
+  for (const f of files) {
+    const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
+    const audits = {}, recs = [];
+    let near = { p: -99 };  // 직전 원본증명서·감사추적인증서 (같은 묶음 연결용)
+    for (let p = 1; p <= pdf.numPages; p++) {
+      setStatus(`${f.name} — ${p}/${pdf.numPages}쪽 읽는 중…`);
+      const page = await pdf.getPage(p);
+      const text = await pageText(page);
+      totalPages++;
+      if (!text.trim()) {
+        const canvas = await renderPage(page, useOcr ? 2.5 : 1.2);
+        const thumb = canvas.toDataURL("image/jpeg", 0.8);
+        let title = "";
+        if (useOcr) { try { title = await ocrTitle(canvas); } catch (e) { title = ""; } }
+        const ip = { file: f.name, page: p, thumb, title, added: false };
+        imagePages.push(ip);
+        if (title.includes(kw)) { ip.added = true; recs.push(blankScan(f.name, p, title)); }
+        continue;
+      }
+      const title = titleOf(text);
+      const serial = text.match(SERIAL);
+      const cert = text.match(/증명서\s*일련번호\s*(\d+)/);
+      if (cert) {
+        const t = text.match(/증명서\s*요청시간\s*(\d{4}-\d{2}-\d{2})/);
+        near = { p, 일련번호: cert[1], 발급일: t ? t[1] : "" };
+      }
+      const isAudit = /수신자/.test(text) && /서명 완료/.test(text);
+      if (isAudit) {
+        const a = parseAudit(text);
+        if (serial) audits[serial[1]] = a;
+        if (p - near.p <= 2) Object.assign(near, a, { p }); else near = Object.assign({ p }, a);
+      }
+      if (!title.includes(kw)) continue;
+      const r = parseWeimjang(text);
+      Object.assign(r, { 파일: f.name, 쪽: p, 제목: title, 판독: "텍스트" });
+      if (serial) { r.일련번호 = serial[1]; r.발급일 = serial[2]; }
+      else if (p - near.p <= 2) {  // 머리말이 안 읽히면 바로 앞 증명서 묶음과 연결
+        r.일련번호 = near.일련번호 || ""; r.발급일 = near.발급일 || "";
+        r.서명완료 = near.서명완료 || ""; r.발송자 = near.발송자 || "";
+        if (near.서명자 && r.성명 && near.서명자 !== r.성명) r._issue = `감사추적 서명자(${near.서명자}) 불일치`;
+      }
+      near = { p: -99 };
+      recs.push(r);
+    }
+    for (const r of recs) {
+      const a = audits[r.일련번호];
+      if (a) { r.서명완료 = a.서명완료; r.발송자 = a.발송자; if (a.서명자 && r.성명 && a.서명자 !== r.성명) r._issue = `감사추적 서명자(${a.서명자}) 불일치`; }
+    }
+    records.push(...recs);
+  }
+  records.sort((a, b) => a.파일.localeCompare(b.파일) || a.쪽 - b.쪽);
+  setStatus(`완료: 전체 ${totalPages}쪽 중 '${$("#keyword").value}' 제목 ${records.length}건`);
+  render();
+}
+function blankScan(file, page, title) {
+  return { 파일: file, 쪽: page, 제목: title || "(스캔 페이지)", 판독: "수기/스캔", _scan: true };
+}
+
+function review(r, mainAgent, unitCount) {
+  const out = [];
+  if (r._scan) out.push("수기/스캔 – 원본 보고 직접 입력");
+  const miss = ["성명", "호수", "연락처", "수임인"].filter(k => !r[k]);
+  if (miss.length) out.push("누락: " + miss.join(", "));
+  if (mainAgent && r.수임인 && r.수임인 !== mainAgent) out.push(`수임인 상이(${r.수임인})`);
+  const dup = (r.호수 || "").split(", ").filter(u => u && unitCount[u] > 1);
+  if (dup.length) out.push("호수 중복: " + dup.join(", "));
+  if (r._issue) out.push(r._issue);
+  return out.join(" / ");
+}
+function analyze() {
+  const cnt = {}; records.forEach(r => r.수임인 && (cnt[r.수임인] = (cnt[r.수임인] || 0) + 1));
+  const mainAgent = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  const unitCount = {};
+  records.forEach(r => (r.호수 || "").split(", ").filter(Boolean).forEach(u => unitCount[u] = (unitCount[u] || 0) + 1));
+  records.forEach(r => r.검토 = review(r, mainAgent, unitCount));
+}
+
+const EDIT = ["성명", "호수", "연락처", "수임인"];
+function render() {
+  analyze();
+  $("#resultCard").hidden = false;
+  const warn = records.filter(r => r.검토).length;
+  $("#stats").innerHTML = [["전체 쪽", totalPages], ["선별된 위임장", records.length], ["검토 필요", warn], ["이상 없음", records.length - warn]]
+    .map(([k, v]) => `<div class="stat"><b>${v}</b><span>${k}</span></div>`).join("");
+  const tb = $("#tbl tbody"); tb.innerHTML = "";
+  records.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (r.검토) tr.className = "warn";
+    const cell = (v, key) => { const td = document.createElement("td"); td.textContent = v || "";
+      if (key) { td.contentEditable = "true"; td.onblur = () => { r[key] = td.textContent.trim(); if (r._scan && EDIT.every(k => r[k])) r._scan = false; render(); }; }
+      tr.appendChild(td); };
+    cell(String(i + 1)); EDIT.forEach(k => cell(r[k], k));
+    cell(r.작성일, "작성일"); cell(r.판독); cell(String(r.쪽));
+    const td = document.createElement("td"); td.className = "note"; td.textContent = r.검토; td.contentEditable = "true";
+    td.onblur = () => { r._issue = td.textContent.trim(); r._scan = false; render(); };
+    tr.appendChild(td); tb.appendChild(tr);
+  });
+  renderThumbs();
+}
+function renderThumbs() {
+  $("#imgCard").hidden = !imagePages.length;
+  const box = $("#thumbs"); box.innerHTML = "";
+  imagePages.forEach(ip => {
+    const d = document.createElement("div"); d.className = "thumb";
+    d.innerHTML = `<img src="${ip.thumb}" alt="${ip.page}쪽"><div>${ip.file.slice(0, 18)} · ${ip.page}쪽</div>
+      <div class="hint">${ip.title ? "제목: " + ip.title.replace(/</g, "&lt;") : "제목 미확인"}</div>`;
+    d.querySelector("img").onclick = () => { $("#zoom img").src = ip.thumb; $("#zoom").showModal(); };
+    const b = document.createElement("button"); b.className = "ghost"; b.style.marginTop = "6px";
+    b.textContent = ip.added ? "추가됨" : "위임장으로 추가"; b.disabled = ip.added;
+    b.onclick = () => { ip.added = true; records.push(blankScan(ip.file, ip.page, ip.title)); records.sort((a, c) => a.파일.localeCompare(c.파일) || a.쪽 - c.쪽); render(); };
+    d.appendChild(b); box.appendChild(d);
+  });
+}
+$("#zoom").onclick = () => $("#zoom").close();
+
+/* ---------- 엑셀 ---------- */
+function unitKey(r) { const m = (r.호수 || "").match(/\d+/); return m ? +m[0] : 1e9; }
+function contactsSheet() {
+  const rows = [...records].sort((a, b) => unitKey(a) - unitKey(b))
+    .map((r, i) => ({ No: i + 1, 이름: r.성명 || "", 호수: r.호수 || "", 전화번호: r.연락처 || "", 수임인: r.수임인 || "", 비고: r.검토 || "" }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "이름", "호수", "전화번호", "수임인", "비고"] });
+  ws["!cols"] = [5, 12, 18, 16, 12, 40].map(w => ({ wch: w }));
+  return ws;
+}
+function detailSheet() {
+  const cols = ["파일", "쪽", "제목", "판독", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토"];
+  const rows = records.map(r => Object.fromEntries(cols.map(c => [c, r[c] ?? ""])));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: cols });
+  ws["!cols"] = [22, 5, 28, 10, 10, 10, 11, 40, 15, 16, 11, 10, 40, 10, 11, 19, 26, 40].map(w => ({ wch: w }));
+  return ws;
+}
+function download(onlyContacts) {
+  analyze();
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, contactsSheet(), "이름·호수·전화번호");
+  if (!onlyContacts) XLSX.utils.book_append_sheet(wb, detailSheet(), "위임장 목록");
+  const d = new Date(), stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
+  XLSX.writeFile(wb, `위임장_판독결과_${stamp}.xlsx`);
+}
+$("#dlAll").onclick = () => download(false);
+$("#dlContacts").onclick = () => download(true);
+
+/* ---------- 파일 입력 ---------- */
+const drop = $("#drop"), input = $("#file");
+drop.onclick = () => input.click();
+input.onchange = () => input.files.length && run([...input.files]);
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); run([...e.dataTransfer.files].filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"))); };
+async function run(files) {
+  if (!files.length) return;
+  try { await handleFiles(files); } catch (e) { setStatus("오류: " + e.message); console.error(e); }
+}
+</script>
+</body>
+</html>

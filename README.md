@@ -4,9 +4,23 @@
 
 | 파일 | 내용 |
 |---|---|
+| `index.html` | **웹 버전** — 브라우저에서 PDF를 넣으면 바로 판독·엑셀 저장 (GitHub Pages용, 파일은 서버로 전송되지 않음) |
 | `weimjang_reader.py` | PDF 묶음에서 **제목에 '위임장'이 들어간 페이지만** 골라 판독하고 엑셀로 정리 |
 | `power_of_attorney_en.md` | 영문 위임장(Power of Attorney) 템플릿 |
 | `manual_overrides.example.json` | 수기 위임장 육안판독 값 입력 예시 |
+
+## 웹 버전 (index.html)
+
+GitHub Pages를 켜면 `https://airrotc29.github.io/weimjang/` 에서 열립니다.
+
+1. Settings → Pages → Build and deployment → Source: **Deploy from a branch**
+2. Branch: **main**, 폴더: **/ (root)** → Save
+3. 1~2분 뒤 위 주소 접속
+
+무료 계정은 **public 저장소에서만** Pages를 쓸 수 있습니다 (private은 GitHub Pro 이상).
+
+사용법: PDF를 끌어 놓기 → 표에서 값 확인·수정(스캔 페이지는 '위임장으로 추가' 후 직접 입력) → 엑셀 내려받기.
+PDF는 브라우저 안에서만 처리되며 어디에도 업로드되지 않습니다.
 
 ## weimjang_reader.py
 
