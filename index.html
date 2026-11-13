@@ -25,6 +25,7 @@ h1{font-size:24px;margin:0 0 4px}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px;margin-bottom:16px}
 .drop{border:2px dashed var(--line);border-radius:10px;padding:28px;text-align:center;cursor:pointer}
 .drop.over{border-color:var(--accent)}
+.drop.busy{opacity:.5;pointer-events:none}
 .row{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin-top:12px}
 label{color:var(--muted);font-size:14px}
 input[type=text]{padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);width:110px}
@@ -57,7 +58,9 @@ dialog::backdrop{background:rgba(0,0,0,.7)}
 .thumb .badge{position:absolute;top:12px;left:12px;font-size:12px;padding:2px 8px;border-radius:10px;background:var(--warn-bg);color:var(--warn);font-weight:600}
 .thumb.s-위임장 .badge{background:var(--bg);color:var(--ok)}
 .thumb.s-제외 .badge{background:var(--bg);color:var(--muted)}
-.thumb.s-제외 img{opacity:.4}
+.thumb.s-제외 img,.thumb.s-자동제외 img{opacity:.45}
+.thumb.s-자동제외 .badge{background:var(--bg);color:var(--muted)}
+.thumb.s-auto .badge{background:var(--bg);color:var(--accent)}
 .thumb.s-대기{border-color:var(--warn)}
 .thumb-btns{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
 .thumb-btns button{padding:5px 10px;font-size:13px}
@@ -97,19 +100,21 @@ button.danger{color:var(--warn);border-color:var(--warn)}
     </div>
     <div class="row">
       <label>제목 키워드 <input type="text" id="keyword" value="위임장"></label>
-      <label><input type="checkbox" id="ocr"> 스캔 페이지 OCR로 제목 찾기 (느림, 한국어 데이터 약 10MB 내려받음)</label>
+      <label><input type="checkbox" id="ocr" checked> 그림(스캔) 페이지도 글자 읽기(OCR) — 처음 한 번 한국어 데이터 약 10MB를 내려받고, 페이지당 몇 초 걸립니다</label>
     </div>
-    <div id="status"></div>
+    <div class="row" style="margin-top:10px"><div id="status" style="margin:0"></div>
+      <button class="ghost danger" id="stopBtn" hidden>판독 중지</button></div>
   </div>
 
   <div class="card human" id="imgCard" hidden>
-    <h2>사람 판독 — 손글씨·스캔 페이지</h2>
-    <p class="hint">글자 정보가 없어 프로그램이 읽을 수 없는 페이지입니다. 틀린 값이 자동으로 들어가지 않도록 <b>사람이 직접</b> 확인합니다.
-      한 쪽씩 보면서 위임장이면 내용을 입력하고, 아니면(투표용지·문자 캡처 등) '위임장 아님'을 누르세요. 누가 언제 판독했는지 엑셀에 기록됩니다.</p>
+    <h2>그림(스캔) 페이지 처리</h2>
+    <p class="hint">글자 정보가 없는 페이지는 먼저 OCR로 읽습니다. <b>원본증명서·감사추적인증서</b>는 일련번호·서명자를 읽어 위임장에 연결하고 자동 제외,
+      <b>인쇄된 위임장</b>은 자동 판독합니다. <b>손글씨·사진처럼 읽을 수 없는 페이지만</b> 사람이 판독합니다. 누가 언제 판독했는지 엑셀에 기록됩니다.</p>
     <div class="row">
       <label>판독자 이름 <input type="text" id="reader" placeholder="예: 홍길동" autocomplete="off"></label>
       <button id="startHuman">판독 시작</button>
       <span id="humanCount" class="hint" style="margin:0"></span>
+      <label><input type="checkbox" id="showAll"> 처리된 페이지도 보기</label>
     </div>
     <div class="thumbs" id="thumbs" style="margin-top:14px"></div>
   </div>
@@ -172,6 +177,7 @@ const $ = s => document.querySelector(s);
 const HEADER = /^\(일련번호\s*\d+\)|^\[별지\]$|^\[\d{4}-\d{2}-\d{2}\]/;
 const SERIAL = /\(일련번호\s*(\d+)\)\s*\[(\d{4}-\d{2}-\d{2})\]/;
 let records = [], imagePages = [], totalPages = 0, docs = {};
+let running = false, stopRequested = false;
 
 /* ---------- 텍스트 추출: pdf.js 조각을 줄 단위로 재조립 ---------- */
 async function pageText(page) {
@@ -252,7 +258,7 @@ function parseWeimjang(text) {
    (예: '성 명' 줄에는 '(서명 또는 날인)' 안내만 있고 이름은 한 줄 아래).
    그래서 '이 라벨 줄 ~ 다음 라벨 줄' 사이 구간 전체에서 값을 찾는다. */
 const LABELS = [
-  ["성명", /^성명/], ["생년월일", /^생년월일/], ["주소", /^주소/],
+  ["성명", /^[성정]명/], ["생년월일", /^생년월일/], ["주소", /^주소/],
   ["연락처", /^연락처/], ["호수", /^소유\(점유\)호수|^소유호수|^호수/], ["작성일", /^작성일/],
 ];
 const LABEL_WORDS = /성명|생년월일|주소|연락처|소유\(점유\)호수|다실소유전부기재|작성일|위임인/g;
@@ -321,17 +327,82 @@ function parseAudit(text) {
 
 /* ---------- OCR (선택) ---------- */
 let worker = null;
-async function ocrTitle(canvas) {
-  if (!worker) {
-    setStatus("OCR 엔진을 불러오는 중… (처음 한 번만)");
-    await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
-    worker = await Tesseract.createWorker("kor");
-  }
+async function ensureOcr() {
+  if (worker) return;
+  setStatus("OCR 엔진을 불러오는 중… (처음 한 번만, 약 10MB)");
+  await loadScript("https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js");
+  worker = await Tesseract.createWorker("kor");
+}
+async function ocrRegion(canvas, top, bottom) {
+  await ensureOcr();
+  const y = Math.round(canvas.height * top), h = Math.round(canvas.height * (bottom - top));
   const crop = document.createElement("canvas");
-  crop.width = canvas.width; crop.height = Math.round(canvas.height * 0.12);
-  crop.getContext("2d").drawImage(canvas, 0, 0);
+  crop.width = canvas.width; crop.height = h;
+  crop.getContext("2d").drawImage(canvas, 0, y, canvas.width, h, 0, 0, canvas.width, h);
   const { data } = await worker.recognize(crop);
-  return titleOf(data.text);
+  // 글자 단어별 확신도: 인쇄체는 높고(약 90) 손글씨·사진은 낮음(70 이하)
+  const words = (data.words || []).filter(w => /[가-힣0-9]/.test(w.text));
+  const mean = words.length ? words.reduce((a, w) => a + w.confidence, 0) / words.length : 0;
+  const low = words.length ? words.filter(w => w.confidence < 60).length / words.length : 1;
+  return { text: data.text || "", mean, low };
+}
+async function ocrText(canvas, top, bottom) { return (await ocrRegion(canvas, top, bottom)).text; }
+const isPrinted = o => o.mean >= 85 && o.low <= 0.10;
+/* 문서 종류: 증명서류는 위쪽 30% 어디에 있어도 인정, 그 밖의 문서는 제목 영역(위 16%) 기준.
+   (투표용지 본문의 '위임장을 제출하였고' 같은 문구로 오판하지 않도록 위임장은 제목 영역을 먼저 봄) */
+function classify(head, title, kw) {
+  if (/감사추적|추적인증/.test(head)) return "audit";
+  if (/원본증명|증명서일련|공인전자문서|패키지ID/.test(head)) return "cert";
+  if (title.includes(kw)) return "weimjang";
+  if (OTHER_DOC.test(title)) return "other";
+  if (head.includes(kw)) return "weimjang";
+  if (OTHER_DOC.test(head)) return "other";
+  return "unknown";
+}
+const OTHER_DOC = /행사서|투표용지|명단|결의서|신청서|확인서|통지서|안내문/;
+function lineWith(text, re) {
+  for (const l of text.split("\n")) if (re.test(squash(l))) return l.replace(/\s{2,}/g, " ").trim();
+  return "";
+}
+const hangulCount = s => (s.match(/[가-힣]/g) || []).length;
+/* 제목 = 위쪽에서 한글이 가장 많은 줄 (작은 머리말·번호 줄은 건너뜀) */
+function bestTitle(text) {
+  let best = "", n = 0;
+  for (const raw of text.split("\n")) {
+    const l = raw.trim(); const c = hangulCount(l);
+    if (!l || HEADER.test(l)) continue;
+    if (c > n) { best = l; n = c; }
+  }
+  return n >= 3 ? best.replace(/\s{2,}/g, " ") : "";
+}
+function thumbOf(canvas) {
+  const w = 340, h = Math.round(canvas.height * w / canvas.width);
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  c.getContext("2d").drawImage(canvas, 0, 0, w, h);
+  return c.toDataURL("image/jpeg", 0.8);
+}
+/* OCR 글자는 띄어쓰기가 들쭉날쭉하므로 공백을 지운 뒤 찾음 */
+function parseCertLoose(text) {
+  const s = squash(text), o = {};
+  let m = s.match(/일련번호(\d{5,8})/); if (m) o.일련번호 = m[1];
+  m = s.match(/요청시간(\d{4}-\d{2}-\d{2})/); if (m) o.발급일 = m[1];
+  return o;
+}
+function parseAuditLoose(text) {
+  const s = squash(text), o = {};
+  let m = s.match(/\((\d{4}-\d{2}-\d{2})(\d{2}:\d{2}:\d{2})\)수신자([가-힣]{2,5})님이문서를서명완료/);
+  if (m) { o.서명완료 = `${m[1]} ${m[2]}`; o.서명자 = m[3]; }
+  if (!o.서명자) { m = s.match(/수신자([가-힣]{2,5})\(010/); if (m) o.서명자 = m[1]; }
+  m = text.match(/^(.*관리인.*)$/m); if (m) o.발송자 = m[1].replace(/\s+/g, " ").trim();
+  return o;
+}
+function linkNear(r, near) {
+  if (r.쪽 - near.p > 2) return;
+  r.일련번호 = near.일련번호 || r.일련번호 || ""; r.발급일 = near.발급일 || r.발급일 || "";
+  r.서명완료 = near.서명완료 || ""; r.발송자 = near.발송자 || "";
+  if (near.서명자 && !r.성명) { r.성명 = near.서명자; r._issue = "이름은 감사추적인증서 서명자에서 가져옴"; }
+  else if (near.서명자 && r.성명 && r.성명 !== near.서명자 && r.성명.includes(near.서명자)) r.성명 = near.서명자;  // 서명 흔적이 붙은 경우
+  else if (near.서명자 && r.성명 && near.서명자 !== r.성명) r._issue = `감사추적 서명자(${near.서명자}) 불일치`;
 }
 function loadScript(src) {
   return new Promise((ok, no) => { const s = document.createElement("script"); s.src = src; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
@@ -349,26 +420,78 @@ function setStatus(t) { $("#status").textContent = t; }
 
 async function handleFiles(files) {
   records = []; imagePages = []; totalPages = 0; docs = {};
+  let stoppedAt = null;
   const kw = $("#keyword").value.trim() || "위임장";
   const useOcr = $("#ocr").checked;
   for (const f of files) {
+    if (stopRequested && stoppedAt) break;
     const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
     docs[f.name] = pdf;
     const audits = {}, recs = [];
     let near = { p: -99 };  // 직전 원본증명서·감사추적인증서 (같은 묶음 연결용)
     for (let p = 1; p <= pdf.numPages; p++) {
+      if (stopRequested) { stoppedAt = { file: f.name, page: p, total: pdf.numPages }; break; }
       setStatus(`${f.name} — ${p}/${pdf.numPages}쪽 읽는 중…`);
       const page = await pdf.getPage(p);
       const text = await pageText(page);
       totalPages++;
       if (!text.trim()) {
-        const canvas = await renderPage(page, useOcr ? 2.5 : 1.2);
-        const thumb = canvas.toDataURL("image/jpeg", 0.8);
-        let title = "";
-        if (useOcr) { try { title = await ocrTitle(canvas); } catch (e) { title = ""; } }
-        // 글자가 없는 페이지(손글씨·스캔·사진)는 자동 판독하지 않고 '사람 판독' 대기열로 보냄
-        imagePages.push({ file: f.name, page: p, thumb, title, status: "대기", rec: null,
-                          hint: title.includes(kw) ? "제목에 '" + kw + "' 보임" : "" });
+        // 글자 정보가 없는 그림 페이지: OCR로 먼저 읽고, 증명서·인쇄 위임장은 자동 처리.
+        // 제목조차 못 읽는 페이지(손글씨·사진 등)만 '사람 판독'으로 보냄
+        const canvas = await renderPage(page, useOcr ? 2 : 1.2);
+        const ip = { file: f.name, page: p, thumb: thumbOf(canvas), title: "", status: "대기", rec: null, hint: "" };
+        imagePages.push(ip);
+        if (!useOcr) continue;
+        try {
+          setStatus(`${f.name} — ${p}/${pdf.numPages}쪽 그림 페이지 글자 읽는 중(OCR)…`);
+          // 1) 문서 종류 판단: 제목 영역(위 16%)과 위쪽 30%의 핵심 단어로. 모르겠으면 해상도를 높여 한 번 더(2회차)
+          let kind = "", head = null, title16 = "";
+          for (const cv of [canvas, null]) {
+            const c = cv || await renderPage(page, 3);
+            head = await ocrRegion(c, 0, 0.30);
+            title16 = await ocrText(c, 0, 0.16);
+            kind = classify(squash(head.text), squash(title16), squash(kw));
+            if (kind !== "unknown") break;
+          }
+          if (kind === "audit") {
+            const a = parseAuditLoose(await ocrText(canvas, 0, 1));
+            if (p - near.p <= 2) Object.assign(near, a, { p }); else near = Object.assign({ p }, a);
+            ip.title = "감사추적인증서"; ip.reason = "감사추적인증서"; ip.info = a; ip.status = "자동제외";
+          } else if (kind === "cert") {
+            const c = parseCertLoose(await ocrText(canvas, 0, 1));
+            near = Object.assign({ p }, c);
+            ip.title = "원본증명서"; ip.reason = "원본증명서"; ip.info = c; ip.status = "자동제외";
+          } else if (kind === "other") {
+            ip.title = lineWith(title16, OTHER_DOC) || lineWith(head.text, OTHER_DOC) || bestTitle(title16);
+            ip.status = "자동제외"; ip.reason = "위임장 아님 (" + ip.title + ")";
+          } else if (kind === "weimjang") {
+            ip.title = lineWith(head.text, new RegExp(squash(kw))) || kw;
+            if (!isPrinted(head)) {
+              // 손글씨: OCR 값은 틀리기 쉬워 미리 채우지도 않음 → 사람이 처음부터 판독
+              ip.hint = `위임장 – 손글씨로 보여 사람 판독 필요 (OCR 확신도 ${Math.round(head.mean)})`;
+            } else {
+              // 2) 인쇄 위임장: 해상도를 바꿔 OCR 2회 → 이름·호수·전화번호가 두 번 다 같아야 자동 판독
+              const r1 = parseWeimjang(await ocrText(canvas, 0, 1));
+              const r2 = parseWeimjang(await ocrText(await renderPage(page, 3), 0, 1));
+              for (const r of [r1, r2]) { Object.assign(r, { 파일: f.name, 쪽: p, 제목: ip.title, 판독: "OCR" }); linkNear(r, near); }
+              near = { p: -99 };
+              const diff = ["성명", "호수", "연락처"].filter(k => (r1[k] || "") !== (r2[k] || ""));
+              const valid = /^[가-힣]{2,5}$/.test(r1.성명 || "") && r1.호수 && /^01\d-\d{3,4}-\d{4}$/.test(r1.연락처 || "");
+              if (!diff.length && valid) {
+                r1._ocr = "인쇄 스캔본 OCR 2회 일치 – 원본 대조 권장";
+                ip.status = "위임장"; ip.rec = r1; ip.auto = true; recs.push(r1);
+              } else {
+                ip.draft = r1;
+                ip.hint = diff.length
+                  ? "OCR 2회 결과가 다름 → 사람 확인: " + diff.map(k => `${k}(${r1[k] || "?"} / ${r2[k] || "?"})`).join(", ")
+                  : "인쇄 위임장 – 일부 항목을 못 읽어 사람 확인 필요 (읽은 값은 미리 채워 둠)";
+              }
+            }
+          } else {
+            ip.title = bestTitle(title16);
+            ip.hint = "문서 종류를 알 수 없음 (OCR 2회) – 사람 확인 필요";
+          }
+        } catch (e) { ip.hint = "OCR 실패 – 사람 확인 필요"; console.error(e); }
         continue;
       }
       const title = titleOf(text);
@@ -388,12 +511,7 @@ async function handleFiles(files) {
       const r = parseWeimjang(text);
       Object.assign(r, { 파일: f.name, 쪽: p, 제목: title, 판독: "텍스트" });
       if (serial) { r.일련번호 = serial[1]; r.발급일 = serial[2]; }
-      else if (p - near.p <= 2) {  // 머리말이 안 읽히면 바로 앞 증명서 묶음과 연결
-        r.일련번호 = near.일련번호 || ""; r.발급일 = near.발급일 || "";
-        r.서명완료 = near.서명완료 || ""; r.발송자 = near.발송자 || "";
-        if (near.서명자 && !r.성명) { r.성명 = near.서명자; r._issue = "이름은 감사추적인증서 서명자에서 가져옴"; }
-        else if (near.서명자 && r.성명 && near.서명자 !== r.성명) r._issue = `감사추적 서명자(${near.서명자}) 불일치`;
-      }
+      else linkNear(r, near);  // 머리말이 안 읽히면 바로 앞 증명서 묶음과 연결
       near = { p: -99 };
       recs.push(r);
     }
@@ -408,9 +526,14 @@ async function handleFiles(files) {
     records.push(...recs);
   }
   sortRecords();
-  const pending = imagePages.length;
+  const pending = pendingPages().length;
+  if (stoppedAt) {
+    setStatus(`중지됨: ${stoppedAt.file} ${stoppedAt.page - 1}/${stoppedAt.total}쪽까지 처리했습니다. ` +
+      `지금까지 읽은 ${records.length}건은 아래에서 확인·저장할 수 있습니다.\n나머지 쪽을 읽으려면 파일을 다시 넣어 주세요.`);
+    render(); return;
+  }
   setStatus(`완료: 전체 ${totalPages}쪽 중 '${$("#keyword").value}' 제목 ${records.length}건 자동 판독` +
-    (pending ? `\n손글씨·스캔 페이지 ${pending}쪽은 아래 '사람 판독'에서 확인해 주세요.` : ""));
+    (pending ? `\n손글씨·스캔 페이지 ${pending}쪽은 아래에서 사람이 판독해 주세요.` : ""));
   render();
 }
 const pendingPages = () => imagePages.filter(ip => ip.status === "대기");
@@ -423,6 +546,7 @@ function review(r, mainAgent, unitCount) {
   if (mainAgent && r.수임인 && r.수임인 !== mainAgent) out.push(`수임인 상이(${r.수임인})`);
   const dup = (r.호수 || "").split(", ").filter(u => u && unitCount[u] > 1);
   if (dup.length) out.push("호수 중복: " + dup.join(", "));
+  if (r._ocr) out.push(r._ocr);
   if (r._issue) out.push(r._issue);
   return out.join(" / ");
 }
@@ -477,7 +601,7 @@ function render() {
 let editing = null, editingPage = null, zoomLevel = 1;
 /* r: 위임장 기록 / ip: 사람 판독 페이지(손글씨·스캔). ip만 있으면 새 기록 초안을 만듦 */
 async function openEditor(r, ip = null) {
-  if (!r) r = { 파일: ip.file, 쪽: ip.page, 제목: ip.title || "(손글씨·스캔 위임장)", 판독: "사람 판독" };
+  if (!r) r = Object.assign({}, ip.draft || {}, { 파일: ip.file, 쪽: ip.page, 제목: ip.title || "(손글씨·스캔 위임장)", 판독: "사람 판독" });
   editing = r; editingPage = ip;
   const dlg = $("#editor");
   $("#edTitle").textContent = `${r.파일} · ${r.쪽}쪽` + (ip ? " · 사람 판독" : "");
@@ -525,7 +649,7 @@ function saveEditor() {
     const reader = $("#f판독자").value.trim();
     if (!reader) { alert("판독자 이름을 입력해 주세요. (누가 판독했는지 기록으로 남깁니다)"); $("#f판독자").focus(); return false; }
     if (!$("#f성명").value.trim()) { alert("이름을 입력해 주세요. 위임장이 아니면 '위임장 아님'을 누르세요."); $("#f성명").focus(); return false; }
-    r.판독자 = reader; r.판독일시 = nowText(); r.판독 = "사람 판독";
+    r.판독자 = reader; r.판독일시 = nowText(); r.판독 = "사람 판독"; delete r._ocr; ip.auto = false;
     rememberReader(reader); $("#reader").value = reader;
     ip.status = "위임장"; ip.rec = r;
     if (!records.includes(r)) { records.push(r); sortRecords(); }
@@ -575,24 +699,30 @@ function markNot(ip, reader) {
 }
 function undoPage(ip) {
   if (ip.rec) records.splice(records.indexOf(ip.rec), 1);
-  ip.rec = null; ip.status = "대기"; ip.판독자 = ""; ip.판독일시 = "";
+  ip.rec = null; ip.status = "대기"; ip.판독자 = ""; ip.판독일시 = ""; ip.auto = false;
   render();
 }
 
+const BADGE = { 대기: "사람 판독 대기", 위임장: "입력 완료", 제외: "위임장 아님", 자동제외: "자동 제외" };
 function renderThumbs() {
   $("#imgCard").hidden = !imagePages.length;
-  const pend = pendingPages().length, done = imagePages.filter(x => x.status === "위임장").length,
-        excl = imagePages.filter(x => x.status === "제외").length;
-  $("#humanCount").innerHTML = `대기 <b>${pend}</b> · 위임장 입력 ${done} · 위임장 아님 ${excl}`;
+  const cnt = k => imagePages.filter(k).length;
+  const pend = cnt(x => x.status === "대기"), autoRead = cnt(x => x.status === "위임장" && x.auto),
+        autoEx = cnt(x => x.status === "자동제외"), human = cnt(x => (x.status === "위임장" && !x.auto) || x.status === "제외");
+  $("#humanCount").innerHTML = `사람 판독 대기 <b>${pend}</b> · 자동 판독 ${autoRead} · 자동 제외 ${autoEx} · 사람 처리 ${human}`;
   $("#startHuman").disabled = !pend;
-  $("#startHuman").textContent = pend ? `판독 시작 (대기 ${pend}쪽)` : "모두 판독 완료";
+  $("#startHuman").textContent = pend ? `판독 시작 (대기 ${pend}쪽)` : "사람 판독 모두 완료";
+  const showAll = $("#showAll").checked;
   const box = $("#thumbs"); box.innerHTML = "";
-  imagePages.forEach(ip => {
-    const d = document.createElement("div"); d.className = "thumb s-" + ip.status;
+  imagePages.filter(ip => showAll || ip.status === "대기").forEach(ip => {
+    const d = document.createElement("div"); d.className = "thumb s-" + ip.status + (ip.auto ? " s-auto" : "");
     const who = ip.status === "위임장" ? ip.rec.성명 : "";
-    d.innerHTML = `<span class="badge">${ip.status === "대기" ? "판독 대기" : ip.status === "위임장" ? "입력 완료" : "위임장 아님"}</span>
+    const badge = ip.status === "위임장" && ip.auto ? "자동 판독(OCR)" : BADGE[ip.status];
+    const info = ip.info ? Object.entries(ip.info).filter(([k]) => k !== "발송자").map(([k, v]) => `${k} ${v}`).join(" · ") : "";
+    const note = ip.reason ? ip.reason + (info ? "<br>" + info : "") : (ip.hint || (ip.title ? "제목: " + ip.title : ""));
+    d.innerHTML = `<span class="badge">${badge}</span>
       <img src="${ip.thumb}" alt="${ip.page}쪽"><div>${ip.page}쪽${who ? " · " + who : ""}</div>
-      <div class="hint">${ip.hint || (ip.title ? "제목: " + ip.title.replace(/</g, "&lt;") : "")}</div>`;
+      <div class="hint">${note.replace(/</g, "&lt;").replace(/&lt;br>/g, "<br>")}</div>`;
     d.querySelector("img").onclick = () => { $("#zoom img").src = ip.thumb; $("#zoom").showModal(); };
     const btns = document.createElement("div"); btns.className = "thumb-btns";
     const mk = (label, cls, fn) => { const b = document.createElement("button"); b.textContent = label; b.className = cls; b.onclick = fn; btns.appendChild(b); };
@@ -605,11 +735,13 @@ function renderThumbs() {
       });
     } else {
       if (ip.status === "위임장") mk("수정", "ghost", () => openEditor(ip.rec, ip));
-      mk("되돌리기", "ghost", () => undoPage(ip));
+      mk(ip.status === "자동제외" ? "사람 판독으로 보내기" : "되돌리기", "ghost", () => undoPage(ip));
     }
     d.appendChild(btns); box.appendChild(d);
   });
+  if (!showAll && !pend) box.innerHTML = `<p class="hint">사람이 판독할 페이지가 없습니다. 자동 처리된 페이지는 '처리된 페이지도 보기'를 켜면 볼 수 있습니다.</p>`;
 }
+$("#showAll").onchange = renderThumbs;
 $("#startHuman").onclick = () => { const n = pendingPages()[0]; if (n) openEditor(null, n); };
 $("#reader").value = readerName();
 $("#reader").onchange = () => rememberReader($("#reader").value.trim());
@@ -634,15 +766,18 @@ function detailSheet() {
   return ws;
 }
 function humanSheet() {
-  const cols = ["파일", "쪽", "처리결과", "판독자", "판독일시", "이름", "호수", "전화번호", "메모"];
+  const cols = ["파일", "쪽", "처리결과", "판독자", "판독일시", "읽은정보", "이름", "호수", "전화번호", "메모"];
   const rows = imagePages.map(ip => ({
     파일: ip.file, 쪽: ip.page,
-    처리결과: ip.status === "대기" ? "미판독" : ip.status === "위임장" ? "위임장 입력" : "위임장 아님",
-    판독자: ip.rec ? ip.rec.판독자 : (ip.판독자 || ""), 판독일시: ip.rec ? ip.rec.판독일시 : (ip.판독일시 || ""),
+    처리결과: ip.status === "대기" ? "미판독" : ip.status === "위임장" ? (ip.auto ? "자동 판독(OCR)" : "위임장 입력")
+      : ip.status === "자동제외" ? "자동 제외: " + ip.reason : "위임장 아님",
+    판독자: ip.auto || ip.status === "자동제외" ? "자동(OCR)" : ip.rec ? ip.rec.판독자 : (ip.판독자 || ""),
+    판독일시: ip.rec ? (ip.rec.판독일시 || "") : (ip.판독일시 || ""),
+    읽은정보: ip.info ? Object.entries(ip.info).map(([k, v]) => `${k}: ${v}`).join(", ") : "",
     이름: ip.rec?.성명 || "", 호수: ip.rec?.호수 || "", 전화번호: ip.rec?.연락처 || "", 메모: ip.rec?.메모 || "",
   }));
   const ws = XLSX.utils.json_to_sheet(rows, { header: cols });
-  ws["!cols"] = [22, 5, 12, 10, 16, 10, 16, 15, 30].map(w => ({ wch: w }));
+  ws["!cols"] = [22, 5, 24, 10, 16, 40, 10, 16, 15, 30].map(w => ({ wch: w }));
   return ws;
 }
 function download(onlyContacts) {
@@ -669,9 +804,17 @@ drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
 drop.ondragleave = () => drop.classList.remove("over");
 drop.ondrop = e => { e.preventDefault(); drop.classList.remove("over"); run([...e.dataTransfer.files].filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"))); };
 async function run(files) {
-  if (!files.length) return;
+  if (!files.length || running) return;
+  running = true; stopRequested = false;
+  $("#stopBtn").hidden = false; $("#stopBtn").disabled = false; $("#stopBtn").textContent = "판독 중지";
+  drop.classList.add("busy");
   try { await handleFiles(files); } catch (e) { setStatus("오류: " + e.message); console.error(e); }
+  finally { running = false; $("#stopBtn").hidden = true; drop.classList.remove("busy"); input.value = ""; }
 }
+$("#stopBtn").onclick = () => {
+  stopRequested = true;
+  $("#stopBtn").disabled = true; $("#stopBtn").textContent = "멈추는 중… (지금 쪽까지 마무리)";
+};
 </script>
 </body>
 </html>
