@@ -42,6 +42,15 @@ td[contenteditable]:focus{background:var(--bg);box-shadow:inset 0 0 0 1px var(--
 tr.warn td{background:var(--warn-bg)}
 .note{color:var(--warn);font-size:13px;white-space:normal;min-width:180px}
 .stats{display:flex;gap:22px;flex-wrap:wrap}
+.ed-form input.guess{background:var(--warn-bg);border-color:var(--warn)}
+.ed-form input.unsure{border:2px dashed #c0392b}
+.guess-note{color:var(--warn);background:var(--warn-bg);padding:8px 10px;border-radius:6px}
+.ed-sel{display:flex;gap:8px;flex-wrap:wrap}.ed-sel label{flex:1;min-width:90px}
+.ed-sel select,#quorum{padding:9px;font-size:15px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);width:100%;font-family:inherit}
+#quorum{width:auto}
+.pill{display:inline-block;padding:1px 9px;border-radius:10px;font-size:13px;font-weight:600;background:var(--bg);border:1px solid var(--line)}
+.pill.us{color:var(--ok)}.pill.them{color:var(--warn)}.pill.hold{background:var(--warn-bg);color:var(--warn)}
+details summary{cursor:pointer}
 .stat b{display:block;font-size:22px}
 .stat span{color:var(--muted);font-size:13px}
 .thumbs{display:flex;gap:12px;flex-wrap:wrap}
@@ -90,8 +99,9 @@ button.danger{color:var(--warn);border-color:var(--warn)}
 </head>
 <body>
 <main>
-  <h1>위임장 판독기</h1>
-  <p class="sub">PDF에서 <b>제목에 '위임장'이 들어간 페이지</b>만 골라 이름·호수·전화번호·수임인을 엑셀로 정리합니다.
+  <h1>위임장 판독기 · 의결권 집계</h1>
+  <p class="sub">PDF에서 <b>제목에 '위임장'이 들어간 페이지</b>만 골라 이름·호수·전화번호·수임인을 엑셀로 정리하고,
+    우리 측과 상대 측이 받은 문서를 견주어 <b>우리 측이 확보한 구분소유자 수와 의결권</b>을 계산합니다.
     파일은 서버로 전송되지 않고 이 브라우저 안에서만 처리됩니다.</p>
 
   <div class="card">
@@ -99,9 +109,18 @@ button.danger{color:var(--warn);border-color:var(--warn)}
       <input type="file" id="file" accept="application/pdf" multiple hidden>
     </div>
     <div class="row">
+      <b>받은 쪽</b>
+      <label><input type="radio" name="side" value="우리" checked> 우리 측이 받은 문서</label>
+      <label><input type="radio" name="side" value="상대"> 상대 측이 받은 문서</label>
+      <button type="button" class="ghost danger" id="clearAll">모두 지우고 새로 시작</button>
+    </div>
+    <p class="hint">파일을 넣기 <b>전에</b> 어느 쪽이 받은 문서인지 고르세요. 파일을 더 넣으면 기존 결과에 <b>추가</b>됩니다.
+      같은 이름의 파일을 다시 넣으면 그 파일만 새로 읽습니다. 상대 측 문서가 없으면 '우리 측'으로만 쓰면 됩니다.</p>
+    <div class="row">
       <label>제목 키워드 <input type="text" id="keyword" value="위임장"></label>
       <label><input type="checkbox" id="ocr" checked> 그림(스캔) 페이지도 글자 읽기(OCR) — 처음 한 번 한국어 데이터 약 10MB를 내려받고, 페이지당 몇 초 걸립니다</label>
     </div>
+    <p class="hint" id="saveInfo">읽은 결과는 이 브라우저에 자동으로 저장됩니다. 창을 닫거나 새로 고쳐도 다시 열면 이어서 할 수 있습니다.</p>
     <div class="row" style="margin-top:10px"><div id="status" style="margin:0"></div>
       <button class="ghost danger" id="stopBtn" hidden>판독 중지</button></div>
   </div>
@@ -116,6 +135,11 @@ button.danger{color:var(--warn);border-color:var(--warn)}
       <span id="humanCount" class="hint" style="margin:0"></span>
       <label><input type="checkbox" id="showAll"> 처리된 페이지도 보기</label>
     </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="ghost" id="draftBtn">판독 초안 불러오기</button>
+      <input type="file" id="draftFile" accept=".json,application/json" hidden>
+      <span id="draftInfo" class="hint" style="margin:0">손글씨를 따로 읽어 만든 초안 파일(.json)을 불러오면, 판독 창에 그 값이 미리 채워집니다. 검토자는 틀린 칸만 고치면 됩니다.</span>
+    </div>
     <div class="thumbs" id="thumbs" style="margin-top:14px"></div>
   </div>
 
@@ -128,11 +152,42 @@ button.danger{color:var(--warn);border-color:var(--warn)}
     <p class="hint">값을 고치거나 손글씨 위임장을 입력하려면 각 줄 오른쪽의 <b>[입력]/[수정]</b> 버튼을 누르세요. 원본을 보면서 입력할 수 있습니다.</p>
     <div class="table-wrap" style="margin-top:12px">
       <table id="tbl"><thead><tr>
-        <th>No</th><th>이름</th><th>호수</th><th>전화번호</th><th>수임인</th><th>작성일</th><th>판독</th><th>쪽</th><th>검토</th><th></th>
+        <th>No</th><th>받은 쪽</th><th>이름</th><th>호수</th><th>전화번호</th><th>수임인</th><th>작성일</th><th>판독</th><th>쪽</th><th>검토</th><th></th>
       </tr></thead><tbody></tbody></table>
     </div>
   </div>
 
+  <div class="card" id="tallyCard" hidden>
+    <h2>의결권 집계</h2>
+    <p class="hint">같은 호수에 문서가 여러 장이면 <b>소유자 문서가 점유자 문서보다 우선</b>하고, 같은 구분 안에서는 <b>가장 나중에 서명한 문서</b>가 유효합니다
+      (전자서명 완료일시가 있으면 그 시각, 없으면 작성일). 철회서는 같은 쪽에 낸 동의만 없앱니다. 같은 날 양쪽 문서가 있는데 선후를 알 수 없으면 '충돌'로 두고 세지 않습니다.
+      판정은 검토 자료입니다. 정족수와 대리권의 유효성은 원본과 법령·규약으로 확인하세요.</p>
+    <div class="row">
+      <button type="button" id="rosterBtn">구분소유자 명부 올리기 (엑셀·CSV)</button>
+      <input type="file" id="rosterFile" accept=".xlsx,.xls,.csv" hidden>
+      <span id="rosterInfo" class="hint" style="margin:0"></span>
+    </div>
+    <p class="hint">명부 첫 줄에 <b>호수</b>(또는 호실), <b>소유자</b>, <b>전유면적</b> 열이 있어야 합니다. 점유자, 소유자ID 열은 선택입니다.
+      명부가 있어야 전체 인원과 전체 의결권(분모)을 알 수 있습니다. 한 사람이 여러 호수를 가지면 소유자 이름이 같아야 한 명으로 셉니다.</p>
+    <div class="row">
+      <label>정족수
+        <select id="quorum">
+          <option value="1/5">5분의 1 이상 (소집 요구 · 구분소유자 수만)</option>
+          <option value="1/2">과반수</option>
+          <option value="2/3">3분의 2 이상</option>
+          <option value="3/4">4분의 3 이상</option>
+          <option value="4/5">5분의 4 이상</option>
+        </select></label>
+      <label><input type="checkbox" id="ownerOnly"> 점유자 문서는 세지 않기</label>
+    </div>
+    <div class="stats" id="tallyStats" style="margin-top:12px"></div>
+    <div id="tallyNotes" class="note" style="margin-top:10px"></div>
+    <details style="margin-top:12px"><summary>호수별 판정 보기</summary>
+      <div class="table-wrap" style="margin-top:8px">
+        <table id="tallyTbl"><thead><tr><th>호수</th><th>소유자</th><th>면적</th><th>판정</th><th>근거</th></tr></thead><tbody></tbody></table>
+      </div>
+    </details>
+  </div>
 </main>
 <dialog id="zoom"><img alt="페이지 확대"></dialog>
 
@@ -148,13 +203,20 @@ button.danger{color:var(--warn);border-color:var(--warn)}
     <form class="ed-form" id="edForm">
       <h2 id="edHead">위임인 정보 입력</h2>
       <p class="hint">왼쪽 원본을 보면서 입력하세요. 확대(＋) 버튼으로 손글씨를 크게 볼 수 있습니다. <span id="queueInfo"></span></p>
+      <p class="hint guess-note" id="guessNote" hidden></p>
       <label id="readerWrap">판독자 (기록용)<input id="f판독자" autocomplete="off" placeholder="판독하는 사람 이름"></label>
       <label>이름<input id="f성명" autocomplete="off" placeholder="예: 최영숙"></label>
       <label>호수<input id="f호수" autocomplete="off" inputmode="numeric" placeholder="예: 1206  (여러 개면 1526, 1703)"></label>
+      <p class="hint" id="rosterHint" hidden></p>
       <label>전화번호<input id="f연락처" autocomplete="off" inputmode="tel" placeholder="예: 01064101826"></label>
       <label>수임인<input id="f수임인" list="agents" autocomplete="off"></label>
       <datalist id="agents"></datalist>
       <label>작성일<input id="f작성일" autocomplete="off" inputmode="numeric" placeholder="예: 20260821  또는 2026.8.21"></label>
+      <div class="ed-sel">
+        <label>받은 쪽<select id="f측"><option value="우리">우리 측</option><option value="상대">상대 측</option></select></label>
+        <label>위임인<select id="f구분"><option value="구분소유자">소유자</option><option value="점유자">점유자</option></select></label>
+        <label>종류<select id="f종류"><option value="동의">동의·위임</option><option value="철회">철회</option></select></label>
+      </div>
       <label>메모<textarea id="f메모" rows="2" placeholder="예: 대필, 문자로 동의 확인"></textarea></label>
       <div class="ed-btns">
         <button type="submit" id="saveNext">저장 후 다음</button>
@@ -176,7 +238,9 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
 const $ = s => document.querySelector(s);
 const HEADER = /^\(일련번호\s*\d+\)|^\[별지\]$|^\[\d{4}-\d{2}-\d{2}\]/;
 const SERIAL = /\(일련번호\s*(\d+)\)\s*\[(\d{4}-\d{2}-\d{2})\]/;
-let records = [], imagePages = [], totalPages = 0, docs = {};
+let records = [], imagePages = [], totalPages = 0, docs = {}, pageCounts = {};
+const currentSide = () => document.querySelector('input[name=side]:checked').value;
+const kindOf = title => /철회/.test(title || "") ? "철회" : "동의";
 let running = false, stopRequested = false;
 
 /* ---------- 텍스트 추출: pdf.js 조각을 줄 단위로 재조립 ---------- */
@@ -462,6 +526,9 @@ async function analyzeImage(pdf, fileName, p, kw) {
         const head2 = await ocrText(await renderPage(page, 2.6), 0, HEAD);
         res.r1 = parseWeimjang(head.text + "\n" + bottom);
         res.r2 = parseWeimjang(head2 + "\n" + bottom);
+      } else {
+        // 손글씨: 자동 확정은 하지 않지만, 읽힌 값은 사람 판독 창에 미리 채워 준다 (검토자는 틀린 칸만 고친다)
+        res.r1 = parseWeimjang(head.text + "\n" + await ocrText(canvas, 0.72, 1));
       }
     } else {
       ip.title = bestTitle(head.titleText || head.text);
@@ -471,7 +538,12 @@ async function analyzeImage(pdf, fileName, p, kw) {
 }
 
 async function handleFiles(files) {
-  records = []; imagePages = []; totalPages = 0; docs = {};
+  // 받은 쪽은 파일을 넣는 순간의 선택으로 정한다. 기존 결과는 지우지 않고 추가하며, 같은 이름의 파일만 새로 읽는다
+  const side = currentSide();
+  const names = new Set(files.map(f => f.name));
+  records = records.filter(r => !names.has(r.파일));
+  imagePages = imagePages.filter(ip => !names.has(ip.file));
+  for (const n of names) { totalPages -= pageCounts[n] || 0; delete pageCounts[n]; }
   let stoppedAt = null;
   const kw = $("#keyword").value.trim() || "위임장";
   const useOcr = $("#ocr").checked;
@@ -480,6 +552,7 @@ async function handleFiles(files) {
     if (stopRequested && stoppedAt) break;
     const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer() }).promise;
     docs[f.name] = pdf;
+    saveFile(f);   // 다시 열었을 때도 원본을 볼 수 있게 PDF 를 이 브라우저에 저장
     const N = pdf.numPages, results = new Array(N + 1);
     let done = 0, imgCount = 0;
     const progress = () => setStatus(`${f.name} — ${done}/${N}쪽 처리 (그림 페이지 ${imgCount}쪽은 OCR로 읽는 중, 동시에 ${OCR_WORKERS}쪽씩)…`);
@@ -490,7 +563,7 @@ async function handleFiles(files) {
       if (stopRequested) { stoppedAt = { file: f.name, page: p, total: N }; break; }
       const page = await pdf.getPage(p);
       const text = await pageText(page);
-      totalPages++;
+      totalPages++; pageCounts[f.name] = (pageCounts[f.name] || 0) + 1;
       if (text.trim()) { results[p] = { p, text }; done++; progress(); continue; }
       if (!useOcr) {
         const c = await renderPage(page, 1.2);
@@ -524,14 +597,14 @@ async function handleFiles(files) {
         }
         if (!title.includes(kw)) continue;
         const r = parseWeimjang(text);
-        Object.assign(r, { 파일: f.name, 쪽: p, 제목: title, 판독: "텍스트" });
+        Object.assign(r, { 파일: f.name, 쪽: p, 제목: title, 판독: "텍스트", 측: side, 종류: kindOf(title) });
         if (serial) { r.일련번호 = serial[1]; r.발급일 = serial[2]; }
         else linkNear(r, near);
         near = { p: -99 };
         recs.push(r);
         continue;
       }
-      const ip = it.ip; imagePages.push(ip);
+      const ip = it.ip; ip.side = side; imagePages.push(ip);
       if (it.kind === "audit") {
         if (p - near.p <= 2) Object.assign(near, it.info, { p }); else near = Object.assign({ p }, it.info);
         Object.assign(ip, { title: "감사추적인증서", reason: "감사추적인증서", info: it.info, status: "자동제외" });
@@ -542,10 +615,13 @@ async function handleFiles(files) {
         Object.assign(ip, { status: "자동제외", reason: "위임장 아님 (" + ip.title + ")" });
       } else if (it.kind === "weimjang") {
         if (!it.printed) {
-          ip.hint = `위임장 – 손글씨로 보여 사람 판독 필요 (OCR 확신도 ${it.conf})`;
+          ip.draft = guessDraft(it.r1, p, near, side);
+          const got = GUESS_FIELDS.filter(([k]) => ip.draft[k]).map(([, label]) => label);
+          ip.hint = `위임장 – 손글씨로 보여 사람 판독 필요 (OCR 확신도 ${it.conf})` +
+            (got.length ? `<br>미리 읽어 둔 칸: ${got.join(", ")} → 원본과 대조해 틀린 칸만 고치세요` : "<br>읽힌 값이 없어 직접 입력해야 합니다");
         } else {
           const { r1, r2 } = it;
-          for (const r of [r1, r2]) { Object.assign(r, { 파일: f.name, 쪽: p, 제목: ip.title, 판독: "OCR" }); linkNear(r, near); }
+          for (const r of [r1, r2]) { Object.assign(r, { 파일: f.name, 쪽: p, 제목: ip.title, 판독: "OCR", 측: side, 종류: kindOf(ip.title) }); linkNear(r, near); }
           // 이름은 감사추적인증서 서명자가 세 번째 근거: OCR 두 번 중 하나라도 서명자와 같으면 그 이름으로 (3개 중 2개 일치)
           const signer = p - near.p <= 2 ? near.서명자 : "";
           if (signer && (r1.성명 === signer || r2.성명 === signer)) r1.성명 = r2.성명 = signer;
@@ -555,7 +631,7 @@ async function handleFiles(files) {
             r1._ocr = "인쇄 스캔본 OCR 2회 일치 – 원본 대조 권장";
             Object.assign(ip, { status: "위임장", rec: r1, auto: true }); recs.push(r1);
           } else {
-            ip.draft = r1;
+            ip.draft = r1; r1._guess = GUESS_FIELDS.map(([k]) => k).filter(k => r1[k]);
             ip.hint = diff.length
               ? "OCR 2회 결과가 다름 → 사람 확인: " + diff.map(k => `${k}(${r1[k] || "?"} / ${r2[k] || "?"})`).join(", ")
               : "인쇄 위임장 – 일부 항목을 못 읽어 사람 확인 필요 (읽은 값은 미리 채워 둠)";
@@ -581,6 +657,28 @@ async function handleFiles(files) {
     (pending ? `\n사람이 판독할 페이지 ${pending}쪽은 아래에서 확인해 주세요.` : ""));
   render();
 }
+/* 손글씨 위임장에서 읽힌 값 중 '모양이 맞는 것'만 초안으로 남긴다.
+   이름은 한글 2~5자, 호수는 3~4자리 숫자(명부가 있으면 명부에 있는 호수만), 전화번호는 01x 형식, 작성일은 실제 날짜.
+   글자 인식이 손글씨를 엉뚱하게 읽은 값이 그대로 채워지지 않게 하기 위함이다. */
+const GUESS_FIELDS = [["성명", "이름"], ["호수", "호수"], ["연락처", "전화번호"], ["수임인", "수임인"], ["작성일", "작성일"]];
+function guessDraft(r, p, near, side) {
+  const d = { 쪽: p };
+  r = r || {};
+  if (/^[가-힣]{2,5}$/.test(r.성명 || "") && !GUIDE.test(r.성명)) d.성명 = r.성명;
+  const units = (r.호수 || "").split(", ").filter(u => /^\d{3,4}호$/.test(u) && (!roster || roster.units.has(u)));
+  if (units.length) d.호수 = units.join(", ");
+  if (/^01\d-\d{3,4}-\d{4}$/.test(r.연락처 || "")) d.연락처 = r.연락처;
+  if (/^[가-힣]{2,5}$/.test(r.수임인 || "")) { d.수임인 = r.수임인; if (r.수임인정보) d.수임인정보 = r.수임인정보; }
+  const m = (r.작성일 || "").match(/^(20\d{2})-(\d{2})-(\d{2})$/);
+  if (m && +m[2] >= 1 && +m[2] <= 12 && +m[3] >= 1 && +m[3] <= 31) d.작성일 = r.작성일;
+  if (r.위임인구분) d.위임인구분 = r.위임인구분;
+  linkNear(d, near);   // 바로 앞의 감사추적인증서가 있으면 서명자 이름·서명완료 시각을 가져온다 (인쇄된 글자라 손글씨보다 믿을 만함)
+  if (d._issue) { d._from = { 성명: "감사추적인증서 서명자" }; delete d._issue; }
+  // 명부가 있고 호수가 하나로 읽혔는데 이름을 못 읽었으면, 명부의 소유자 이름을 후보로 넣는다
+  if (!d.성명 && roster && units.length === 1 && roster.units.get(units[0]).소유자) { d.성명 = roster.units.get(units[0]).소유자; d._from = { 성명: "명부의 소유자 이름" }; }
+  d._guess = GUESS_FIELDS.map(([k]) => k).filter(k => d[k]);
+  return d;
+}
 const pendingPages = () => imagePages.filter(ip => ip.status === "대기");
 const ipOf = r => imagePages.find(ip => ip.rec === r);
 
@@ -589,7 +687,8 @@ function review(r, mainAgent, unitCount) {
   const miss = ["성명", "호수", "연락처", "수임인"].filter(k => !r[k]);
   if (miss.length) out.push("누락: " + miss.join(", "));
   if (mainAgent && r.수임인 && r.수임인 !== mainAgent) out.push(`수임인 상이(${r.수임인})`);
-  const dup = (r.호수 || "").split(", ").filter(u => u && unitCount[u] > 1);
+  // 같은 쪽 안에서 같은 호수가 두 번 나올 때만 중복으로 본다 (우리 측·상대 측에 각각 있는 것은 정상이고 집계에서 선후를 가린다)
+  const dup = (r.호수 || "").split(", ").filter(u => u && unitCount[(r.측 || "우리") + u] > 1);
   if (dup.length) out.push("호수 중복: " + dup.join(", "));
   if (r._ocr) out.push(r._ocr);
   if (r._issue) out.push(r._issue);
@@ -599,7 +698,7 @@ function analyze() {
   const cnt = {}; records.forEach(r => r.수임인 && (cnt[r.수임인] = (cnt[r.수임인] || 0) + 1));
   const mainAgent = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
   const unitCount = {};
-  records.forEach(r => (r.호수 || "").split(", ").filter(Boolean).forEach(u => unitCount[u] = (unitCount[u] || 0) + 1));
+  records.forEach(r => (r.호수 || "").split(", ").filter(Boolean).forEach(u => { const k = (r.측 || "우리") + u; unitCount[k] = (unitCount[k] || 0) + 1; }));
   records.forEach(r => r.검토 = review(r, mainAgent, unitCount));
 }
 
@@ -621,7 +720,7 @@ function render() {
     const tr = document.createElement("tr");
     if (r.검토) tr.className = "warn";
     const cell = v => { const td = document.createElement("td"); td.textContent = v || ""; tr.appendChild(td); return td; };
-    cell(String(i + 1)); cell(r.성명); cell(r.호수); cell(r.연락처); cell(r.수임인);
+    cell(String(i + 1)); cell((r.측 || "우리") + " 측" + (r.종류 === "철회" ? " · 철회" : "")); cell(r.성명); cell(r.호수); cell(r.연락처); cell(r.수임인);
     cell(r.작성일); cell(r.판독자 ? `사람(${r.판독자})` : r.판독); cell(String(r.쪽));
     const note = cell([r.검토, r.메모].filter(Boolean).join(" / ")); note.className = "note";
     const act = cell(""); act.className = "act";
@@ -640,13 +739,15 @@ function render() {
     tb.appendChild(tr);
   });
   renderThumbs();
+  renderTally();
+  saveSoon();
 }
 
 /* ---------- 입력 창: 왼쪽 원본, 오른쪽 입력칸 ---------- */
 let editing = null, editingPage = null, zoomLevel = 1;
 /* r: 위임장 기록 / ip: 사람 판독 페이지(손글씨·스캔). ip만 있으면 새 기록 초안을 만듦 */
 async function openEditor(r, ip = null) {
-  if (!r) r = Object.assign({}, ip.draft || {}, { 파일: ip.file, 쪽: ip.page, 제목: ip.title || "(손글씨·스캔 위임장)", 판독: "사람 판독" });
+  if (!r) r = Object.assign({ 측: ip.side || currentSide(), 종류: kindOf(ip.title) }, ip.draft || {}, { 파일: ip.file, 쪽: ip.page, 제목: ip.title || "(손글씨·스캔 위임장)", 판독: "사람 판독" });
   editing = r; editingPage = ip;
   const dlg = $("#editor");
   $("#edTitle").textContent = `${r.파일} · ${r.쪽}쪽` + (ip ? " · 사람 판독" : "");
@@ -663,6 +764,24 @@ async function openEditor(r, ip = null) {
   $("#f수임인").value = agent;
   $("#f작성일").value = r.작성일 || "";
   $("#f메모").value = r.메모 || "";
+  $("#f측").value = r.측 || "우리";
+  $("#f구분").value = r.위임인구분 === "점유자" ? "점유자" : "구분소유자";
+  $("#f종류").value = r.종류 === "철회" ? "철회" : "동의";
+  // 프로그램이 읽어 미리 채운 칸은 색으로 표시한다. 사람이 그 칸을 고치면 표시가 풀린다
+  const guess = ip && !r.판독자 ? (r._guess || []) : [];
+  for (const [k] of GUESS_FIELDS) {
+    const el = $("#f" + k);
+    el.classList.toggle("guess", guess.includes(k) && !!el.value);
+    el.classList.toggle("unsure", !!ip && !r.판독자 && (r._unsure || []).includes(k));
+    el.title = guess.includes(k) && el.value ? "프로그램이 읽은 값" + (r._from && r._from[k] ? ` (${r._from[k]})` : " (글자 인식)") + " – 원본과 대조하세요" : "";
+  }
+  $("#rosterHint").hidden = true;
+  $("#guessNote").hidden = !guess.length;
+  $("#guessNote").textContent = guess.length
+    ? `색칠된 칸(${GUESS_FIELDS.filter(([k]) => guess.includes(k)).map(([, l]) => l).join(", ")})은 프로그램이 미리 읽은 값입니다. 손글씨는 틀리게 읽히기 쉬우니 원본과 한 글자씩 대조하고, 틀린 칸만 고치세요.` +
+      (r._from && /감사추적|명부/.test(r._from.성명 || "") ? ` 이름은 ${r._from.성명}에서 가져왔습니다.` : "") +
+      ((r._unsure || []).length ? ` 점선 테두리 칸(${GUESS_FIELDS.filter(([k]) => r._unsure.includes(k)).map(([, l]) => l).join(", ")})은 읽은 쪽에서도 확실하지 않다고 표시한 칸이니 특히 주의해서 보세요.` : "")
+    : "";
   $("#agents").innerHTML = [...new Set(records.map(x => x.수임인).filter(Boolean))].map(a => `<option value="${a}">`).join("");
   $("#edImg").removeAttribute("src");
   $("#edLoading").hidden = false;
@@ -670,12 +789,30 @@ async function openEditor(r, ip = null) {
   if (!dlg.open) dlg.showModal();
   setTimeout(() => (ip && !$("#f판독자").value ? $("#f판독자") : $("#f성명")).focus(), 0);
   try {
-    const page = await docs[r.파일].getPage(r.쪽);
+    const page = await (await getDoc(r.파일)).getPage(r.쪽);
     const c = await renderPage(page, 2);
     if (editing === r) { $("#edImg").src = c.toDataURL("image/jpeg", 0.88); $("#edLoading").hidden = true; }
   } catch (e) { $("#edLoading").textContent = "원본을 불러오지 못했습니다."; }
 }
 function applyZoom() { $("#edImg").style.width = (zoomLevel * 100) + "%"; $("#zoomPct").textContent = Math.round(zoomLevel * 100) + "%"; }
+for (const [k] of GUESS_FIELDS) $("#f" + k).addEventListener("input", e => e.target.classList.remove("guess", "unsure"));
+/* 호수를 적고 나가면: 명부에 그 호수가 있고 이름 칸이 비어 있을 때 명부의 소유자 이름을 후보로 채운다.
+   손글씨 이름을 처음부터 읽는 대신 '명부 이름과 같은지'만 확인하면 되게 하기 위함 */
+$("#f호수").addEventListener("change", () => {
+  const units = normUnits($("#f호수").value).split(", ").filter(Boolean);
+  const hint = $("#rosterHint");
+  if (!roster || !units.length) { hint.hidden = true; return; }
+  const found = units.map(u => roster.units.get(u)).filter(Boolean), miss = units.filter(u => !roster.units.has(u));
+  hint.hidden = false;
+  hint.textContent = (found.length ? "명부: " + found.map(u => `${u.호수} 소유자 ${u.소유자 || "(이름 없음)"}${u.점유자 ? " · 점유자 " + u.점유자 : ""}`).join(" / ") : "") +
+    (miss.length ? `${found.length ? " / " : ""}명부에 없는 호수: ${miss.join(", ")} (숫자를 다시 확인하세요)` : "");
+  const owners = [...new Set(found.map(u => u.소유자).filter(Boolean))];
+  const name = $("#f성명");
+  if (!name.value.trim() && owners.length === 1 && !miss.length) {
+    name.value = owners[0]; name.classList.add("guess");
+    name.title = "명부의 소유자 이름 – 원본의 이름과 같은지 확인하세요";
+  }
+});
 $("#zIn").onclick = () => { zoomLevel = Math.min(3, zoomLevel + 0.25); applyZoom(); };
 $("#zOut").onclick = () => { zoomLevel = Math.max(0.5, zoomLevel - 0.25); applyZoom(); };
 
@@ -706,6 +843,9 @@ function saveEditor() {
   const d = $("#f작성일").value.trim();
   r.작성일 = d ? normDate(d) : "";
   r.메모 = $("#f메모").value.trim();
+  r.측 = $("#f측").value; r.위임인구분 = $("#f구분").value; r.종류 = $("#f종류").value;
+  // 사람이 원본을 보고 저장했으므로 자동 판독 때 붙은 확인 권고는 지운다 (확인한 줄이 계속 색칠되지 않게)
+  delete r._ocr; delete r._issue; delete r._guess; delete r._from; delete r._unsure; r.확인일시 = nowText();
   return true;
 }
 function goNext(wasPage) {
@@ -792,22 +932,311 @@ $("#reader").value = readerName();
 $("#reader").onchange = () => rememberReader($("#reader").value.trim());
 $("#zoom").onclick = () => $("#zoom").close();
 
+/* ---------- 의결권 집계 ----------
+   규칙: ① 소유자 문서가 점유자 문서보다 우선(날짜 무관) ② 같은 구분 안에서는 가장 나중 문서
+        ③ 철회는 같은 쪽에 낸 동의만 없앰 ④ 소유자가 철회해 유효한 소유자 문서가 없으면 점유자 문서
+        ⑤ 같은 시점(시각을 모르면 같은 날)에 상반된 문서가 있으면 '충돌'로 두고 세지 않음 */
+let roster = null;   // { units: Map(호수 → {호수, 소유자, 점유자, 면적, ownerId}), warn: [] }
+const QUORUMS = { "1/5": [1, 5, false, true], "1/2": [1, 2, true, false], "2/3": [2, 3, false, false], "3/4": [3, 4, false, false], "4/5": [4, 5, false, false] };  // [분자, 분모, 초과여부, 구분소유자 수만]
+const meets = (have, total, q) => { const [n, d, strict] = QUORUMS[q]; return strict ? have * d > total * n + 1e-9 : have * d >= total * n - 1e-9; };
+const unitNo = s => { const m = String(s || "").match(/\d{3,4}(?!.*\d{3,4})/); return m ? m[0] + "호" : ""; };  // 마지막 3~4자리 숫자 = 호수 ('101동 1216호' → 1216호)
+function whenOf(r) {
+  const t = (r.서명완료 || r.작성일 || "").trim();
+  const m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?: (\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!m) return null;
+  return { t: Date.UTC(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0)), day: `${m[1]}-${m[2]}-${m[3]}`, timed: m[4] !== undefined, text: t };
+}
+function decideTimeline(docs) {
+  const ord = [...docs].sort((a, b) => a.w.t - b.w.t || a.no - b.no);
+  let cur = null;
+  for (const d of ord) {
+    if (d.kind === "동의") cur = d;
+    else if (cur && cur.side === d.side) cur = null;   // 철회: 같은 쪽 동의만 없앰
+  }
+  for (let i = 0; i < docs.length; i++) for (let j = i + 1; j < docs.length; j++) {
+    const a = docs[i], b = docs[j];
+    const same = a.w.t === b.w.t || ((!a.w.timed || !b.w.timed) && a.w.day === b.w.day);
+    if (same && (a.side !== b.side || a.kind !== b.kind)) return { decision: "충돌", reason: `같은 시점에 상반된 문서 (No ${a.no} / No ${b.no}, ${a.w.day})` };
+  }
+  if (!cur) return { decision: "없음", reason: "유효한 동의 없음 (철회됨)" };
+  return { decision: cur.side, reason: `${cur.role} ${cur.name || "(이름 없음)"} · ${cur.side} 측 ${cur.w.text} (No ${cur.no})` };
+}
+function decideUnit(docs, ownerOnly) {
+  if (!docs.length) return { decision: "없음", reason: "문서 없음" };
+  const own = docs.filter(d => d.role === "소유자"), occ = ownerOnly ? [] : docs.filter(d => d.role === "점유자");
+  if (own.length) {
+    const r = decideTimeline(own);
+    if (r.decision === "없음" && occ.length) { const o = decideTimeline(occ); o.reason = "소유자 문서는 철회됨 → 점유자 문서 기준: " + o.reason; return o; }
+    if (occ.length) r.reason += ` · 점유자 문서 ${occ.length}건은 소유자 우선으로 제외`;
+    return r;
+  }
+  if (!occ.length) return { decision: "없음", reason: "점유자 문서만 있음 (세지 않음)" };
+  const o = decideTimeline(occ); o.reason = "소유자 문서 없음 → 점유자 문서 기준: " + o.reason; return o;
+}
+function tally() {
+  const ownerOnly = $("#ownerOnly").checked, notes = [], by = new Map();
+  records.forEach((r, i) => {
+    const w = whenOf(r), units = (r.호수 || "").split(", ").filter(Boolean);
+    if (!units.length) { notes.push(`No ${i + 1}: 호수가 없어 집계에서 빠짐`); return; }
+    if (!w) { notes.push(`No ${i + 1} (${r.호수}): 작성일을 읽을 수 없어 집계에서 빠짐`); return; }
+    for (const u of units) {
+      if (roster && !roster.units.has(u)) { notes.push(`No ${i + 1}: ${u} 가 명부에 없어 집계에서 빠짐`); continue; }
+      if (!by.has(u)) by.set(u, []);
+      by.get(u).push({ no: i + 1, side: r.측 || "우리", kind: r.종류 === "철회" ? "철회" : "동의", role: r.위임인구분 === "점유자" ? "점유자" : "소유자", name: r.성명, w });
+    }
+  });
+  const key = u => +u.replace(/\D/g, "");
+  const list = roster ? [...roster.units.values()] : [...by.keys()].sort((a, b) => key(a) - key(b)).map(u => ({ 호수: u, 소유자: "", 면적: 1, ownerId: u }));
+  const units = list.map(info => ({ info, ...decideUnit(by.get(info.호수) || [], ownerOnly) }));
+  // 구분소유자 수: 한 사람의 호수가 모두 같은 판정일 때만 그 판정으로 센다. 다르면 '혼재'로 두고 세지 않음
+  const owners = new Map();
+  units.forEach(u => { if (!owners.has(u.info.ownerId)) owners.set(u.info.ownerId, []); owners.get(u.info.ownerId).push(u); });
+  const zero = () => ({ 우리: 0, 상대: 0, 없음: 0, 충돌: 0, 혼재: 0, 전체: 0 });
+  const head = zero(), area = zero(), cnt = zero();
+  units.forEach(u => { area[u.decision] += u.info.면적; area.전체 += u.info.면적; cnt[u.decision]++; cnt.전체++; });
+  for (const [id, us] of owners) {
+    const ds = new Set(us.map(u => u.decision));
+    const d = ds.size === 1 ? us[0].decision : ds.has("충돌") ? "충돌" : "혼재";
+    head[d]++; head.전체++;
+    if (d === "혼재") notes.push(`${us[0].info.소유자 || id}: 가진 호수의 판정이 서로 달라 인원에서 보류 (${us.map(u => u.info.호수 + " " + u.decision).join(", ")})`);
+  }
+  units.filter(u => u.decision === "충돌").forEach(u => notes.push(`${u.info.호수}: ${u.reason} → 원본 확인`));
+  return { units, head, area, cnt, notes };
+}
+let lastTally = null;
+function renderTally() {
+  $("#tallyCard").hidden = !records.length;
+  if (!records.length) return;
+  const t = lastTally = tally(), q = $("#quorum").value, headOnly = QUORUMS[q][3];
+  const num = n => Number.isInteger(n) ? String(n) : n.toFixed(2);
+  const pct = (a, b) => b ? ` (${(a / b * 100).toFixed(1)}%)` : "";
+  const okHead = meets(t.head.우리, t.head.전체, q), okArea = meets(t.area.우리, t.area.전체, q);
+  const ok = headOnly ? okHead : okHead && okArea;
+  const label = $("#quorum").selectedOptions[0].textContent.split(" (")[0];
+  const stats = roster ? [
+    ["우리 측 구분소유자 수", `${t.head.우리} / ${t.head.전체}명${pct(t.head.우리, t.head.전체)}`],
+    ["우리 측 의결권(면적)", `${num(t.area.우리)} / ${num(t.area.전체)}${pct(t.area.우리, t.area.전체)}`],
+    ["상대 측", `${t.head.상대}명 · ${num(t.area.상대)}`],
+    [label, (ok ? "충족" : "미충족") + (headOnly ? "" : ` (인원 ${okHead ? "○" : "×"} · 의결권 ${okArea ? "○" : "×"})`), !ok],
+  ] : [
+    ["우리 측 호수", t.cnt.우리], ["상대 측 호수", t.cnt.상대], ["충돌(보류)", t.cnt.충돌, t.cnt.충돌 > 0],
+    ["정족수", "명부를 올리면 계산됩니다", true],
+  ];
+  $("#tallyStats").innerHTML = stats.map(([k, v, hot]) => `<div class="stat${hot ? " hot" : ""}"><b>${v}</b><span>${k}</span></div>`).join("");
+  $("#rosterInfo").textContent = roster ? `명부 ${roster.units.size}개 호수` + (roster.warn.length ? ` · 주의 ${roster.warn.length}건` : "") : "명부 없음 – 문서에 나온 호수만으로 셉니다 (전체 인원·의결권을 알 수 없음)";
+  const notes = [...(roster ? roster.warn : []), ...t.notes];
+  $("#tallyNotes").innerHTML = notes.slice(0, 60).map(n => "· " + n.replace(/</g, "&lt;")).join("<br>") + (notes.length > 60 ? `<br>… 외 ${notes.length - 60}건 (엑셀 '집계' 시트에 모두 들어갑니다)` : "");
+  const tb = $("#tallyTbl tbody"); tb.innerHTML = "";
+  const cls = { 우리: "us", 상대: "them", 충돌: "hold" };
+  for (const u of t.units) {
+    const tr = document.createElement("tr");
+    const cell = v => { const td = document.createElement("td"); td.textContent = v ?? ""; tr.appendChild(td); return td; };
+    cell(u.info.호수); cell(u.info.소유자); cell(roster ? num(u.info.면적) : "");
+    cell("").innerHTML = `<span class="pill ${cls[u.decision] || ""}">${u.decision}</span>`;
+    cell(u.reason).className = "note";
+    tb.appendChild(tr);
+  }
+}
+$("#quorum").onchange = () => { renderTally(); saveSoon(); };
+$("#ownerOnly").onchange = () => { renderTally(); saveSoon(); };
+
+/* 명부: 첫 15줄 안에서 '호수(호실)' 열이 있는 줄을 머리글로 보고 읽는다 */
+const ROSTER_COLS = { 호수: /^(호수|호실|동호수|동호|호|세대|unit_id)$/, 소유자: /^(소유자|구분소유자|소유자명|성명|이름|owner_name)$/, 점유자: /^(점유자|임차인|occupant_name)$/, 면적: /^(전유면적|면적|전용면적|의결권|지분|weight)$/, id: /^(소유자id|소유자번호|owner_id)$/i };
+function parseRoster(rows) {
+  for (let h = 0; h < Math.min(rows.length, 15); h++) {
+    const col = {};
+    (rows[h] || []).forEach((c, i) => { const s = squash(String(c ?? "")); for (const k in ROSTER_COLS) if (!(k in col) && ROSTER_COLS[k].test(s)) col[k] = i; });
+    if (!("호수" in col)) continue;
+    const units = new Map(), warn = [];
+    rows.slice(h + 1).forEach((row, n) => {
+      const get = k => k in col ? String(row[col[k]] ?? "").trim() : "";
+      const u = unitNo(get("호수")); if (!u) return;
+      if (units.has(u)) { warn.push(`명부 ${h + n + 2}행: ${u} 가 두 번 나옴 (뒤의 줄은 무시)`); return; }
+      const areaText = get("면적").replace(/[,㎡\s]/g, ""), a = areaText ? Number(areaText) : 1;
+      if (!(a > 0)) warn.push(`명부 ${h + n + 2}행: ${u} 의 면적 '${get("면적")}' 을 읽지 못해 1로 셈`);
+      const owner = squash(get("소유자"));
+      units.set(u, { 호수: u, 소유자: owner, 점유자: squash(get("점유자")), 면적: a > 0 ? a : 1, ownerId: get("id") || owner || u });
+    });
+    if (units.size) return { units, warn };
+  }
+  throw new Error("명부에서 '호수'(또는 '호실') 열을 찾지 못했습니다. 첫 줄에 열 이름이 있어야 합니다.");
+}
+$("#rosterBtn").onclick = () => $("#rosterFile").click();
+$("#rosterFile").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const wb = XLSX.read(await f.arrayBuffer(), { type: "array", codepage: 949 });
+    roster = parseRoster(XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, raw: false, defval: "" }));
+    render();
+  } catch (err) { alert("명부를 읽지 못했습니다: " + err.message); }
+  e.target.value = "";
+};
+$("#clearAll").onclick = () => {
+  if (!records.length && !imagePages.length && !roster) return;
+  if (!confirm("읽어 둔 결과와 명부를 모두 지웁니다. 엑셀로 저장하지 않은 내용은 사라집니다. 계속할까요?")) return;
+  records = []; imagePages = []; totalPages = 0; docs = {}; pageCounts = {}; roster = null;
+  $("#resultCard").hidden = true; $("#imgCard").hidden = true; $("#tallyCard").hidden = true; setStatus("");
+  clearTimeout(saveTimer);
+  Promise.all([idb(STORE_STATE, "readwrite", st => st.clear()), idb(STORE_FILES, "readwrite", st => st.clear())])
+    .then(() => $("#saveInfo").textContent = "저장해 둔 내용을 모두 지웠습니다.").catch(console.error);
+};
+function tallySheets(wb) {
+  const t = lastTally || tally(), q = $("#quorum").value, headOnly = QUORUMS[q][3];
+  const okHead = meets(t.head.우리, t.head.전체, q), okArea = meets(t.area.우리, t.area.전체, q);
+  const rows = [["구분", "구분소유자 수", "의결권(면적)", "호수"], ...["전체", "우리", "상대", "없음", "충돌", "혼재"].map(k => [k === "전체" ? k : k === "없음" ? "의사 없음" : k === "충돌" || k === "혼재" ? k + "(보류)" : k + " 측", t.head[k], k === "혼재" ? "" : +t.area[k].toFixed(4), k === "혼재" ? "" : t.cnt[k]]),
+    [], ["정족수", $("#quorum").selectedOptions[0].textContent], ["판정", roster ? ((headOnly ? okHead : okHead && okArea) ? "충족" : "미충족") : "명부 없음 – 판정 불가"],
+    ["명부", roster ? `${roster.units.size}개 호수` : "없음 (문서에 나온 호수만으로 셈)"], ["점유자 문서", $("#ownerOnly").checked ? "세지 않음" : "소유자 문서가 없을 때만 셈"],
+    [], ["확인이 필요한 항목"], ...[...(roster ? roster.warn : []), ...t.notes].map(n => [n])];
+  const ws = XLSX.utils.aoa_to_sheet(rows); ws["!cols"] = [24, 14, 14, 10].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, ws, "집계");
+  const us = XLSX.utils.json_to_sheet(t.units.map(u => ({ 호수: u.info.호수, 소유자: u.info.소유자 || "", 면적: roster ? u.info.면적 : "", 판정: u.decision, 근거: u.reason })), { header: ["호수", "소유자", "면적", "판정", "근거"] });
+  us["!cols"] = [10, 12, 10, 8, 70].map(w => ({ wch: w }));
+  XLSX.utils.book_append_sheet(wb, us, "호수별 판정");
+}
+
+/* ---------- 판독 초안 불러오기 ----------
+   손글씨 쪽을 따로 읽어 만든 초안 파일을 '사람 판독 대기' 쪽에 붙인다. 초안은 판독 창에 미리 채워질 뿐이고,
+   기록으로 확정되는 것은 검토자가 원본과 대조해 저장했을 때다. 이미 사람이 처리한 쪽은 건드리지 않는다.
+   형식: { "format": "weimjang-draft", "pages": [ { "파일": "묶음.pdf", "쪽": 3, "성명": "…", "호수": "1206호", "연락처": "…",
+           "수임인": "…", "작성일": "2026-08-21", "위임인구분": "구분소유자|점유자", "종류": "동의|철회",
+           "불확실": ["연락처"], "메모": "…", "위임장아님": false } ] } */
+const DRAFT_KEYS = { 성명: "성명", 이름: "성명", 호수: "호수", 연락처: "연락처", 전화번호: "연락처", 수임인: "수임인", 작성일: "작성일" };
+function applyDrafts(data, source) {
+  const pages = Array.isArray(data) ? data : data && data.pages;
+  if (!Array.isArray(pages)) throw new Error("초안 파일 형식이 아닙니다 (pages 목록이 없음)");
+  const files = [...new Set(imagePages.map(ip => ip.file))];
+  let applied = 0, notWj = 0; const skipped = [];
+  for (const pg of pages) {
+    const no = +pg.쪽;
+    // 파일 이름이 같은 쪽을 찾고, 올려 둔 파일이 하나뿐이면 이름이 달라도 쪽 번호로 맞춘다
+    const ip = imagePages.find(x => x.page === no && x.file === pg.파일) || (files.length === 1 ? imagePages.find(x => x.page === no) : null);
+    if (!ip) { skipped.push(`${pg.파일 || ""} ${no}쪽: 화면에 그 쪽이 없음`); continue; }
+    if (ip.status !== "대기") { skipped.push(`${ip.file} ${no}쪽: 이미 처리된 쪽(${BADGE[ip.status]})이라 건너뜀`); continue; }
+    if (pg.위임장아님) {
+      ip.hint = `${source}: 위임장이 아닌 것으로 보임${pg.메모 ? " (" + pg.메모 + ")" : ""} → 원본을 보고 '위임장 아님'을 누르세요`;
+      delete ip.draft; notWj++; continue;
+    }
+    const d = { 쪽: no, _guess: [], _unsure: [], _from: {} };
+    for (const key in DRAFT_KEYS) {
+      const k = DRAFT_KEYS[key], raw = String(pg[key] ?? "").trim();
+      if (!raw || d[k]) continue;
+      d[k] = k === "호수" ? normUnits(raw) : k === "연락처" ? fmtPhone(raw) : k === "작성일" ? normDate(raw) : raw.replace(/\s+/g, "");
+      if (d[k]) { d._guess.push(k); d._from[k] = source; }
+    }
+    for (const u of pg.불확실 || []) { const k = DRAFT_KEYS[u]; if (k && !d._unsure.includes(k)) d._unsure.push(k); }
+    if (pg.위임인구분 === "점유자" || pg.위임인구분 === "구분소유자") d.위임인구분 = pg.위임인구분;
+    if (pg.종류 === "철회") d.종류 = "철회";
+    if (pg.메모) d.메모 = `${source}: ${pg.메모}`;
+    ip.draft = d;
+    const got = GUESS_FIELDS.filter(([k]) => d[k]).map(([, l]) => l);
+    ip.hint = `${source} 초안: ${got.join(", ") || "읽은 값 없음"}` + (d._unsure.length ? ` (불확실: ${GUESS_FIELDS.filter(([k]) => d._unsure.includes(k)).map(([, l]) => l).join(", ")})` : "") + " → 원본과 대조해 틀린 칸만 고치세요";
+    applied++;
+  }
+  return { applied, notWj, skipped };
+}
+$("#draftBtn").onclick = () => $("#draftFile").click();
+$("#draftFile").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    const r = applyDrafts(data, data.source || "AI 판독");
+    $("#draftInfo").textContent = `초안 ${r.applied}쪽을 붙였습니다` + (r.notWj ? ` · 위임장이 아닌 것으로 보이는 쪽 ${r.notWj}쪽` : "") +
+      (r.skipped.length ? ` · 건너뜀 ${r.skipped.length}쪽 (${r.skipped.slice(0, 3).join(" / ")}${r.skipped.length > 3 ? " …" : ""})` : "") +
+      ". '판독 시작'을 눌러 한 쪽씩 확인하세요.";
+    render();
+  } catch (err) { alert("초안 파일을 읽지 못했습니다: " + err.message); }
+  e.target.value = "";
+};
+
+/* ---------- 브라우저에 저장 (IndexedDB) ----------
+   읽은 결과·명부·원본 PDF 를 이 브라우저 안에만 저장한다. 서버로는 아무것도 보내지 않는다.
+   창을 닫거나 새로 고쳐도 다시 열면 이어서 할 수 있고, '모두 지우고 새로 시작' 을 누르면 함께 지워진다. */
+const DB_NAME = "weimjang", STORE_STATE = "state", STORE_FILES = "files";
+let dbPromise = null, saveTimer = null, saveOff = false;
+function openDb() {
+  if (!dbPromise) dbPromise = new Promise((ok, no) => {
+    const q = indexedDB.open(DB_NAME, 1);
+    q.onupgradeneeded = () => { q.result.createObjectStore(STORE_STATE); q.result.createObjectStore(STORE_FILES); };
+    q.onsuccess = () => ok(q.result); q.onerror = () => no(q.error);
+  });
+  return dbPromise;
+}
+async function idb(store, mode, fn) {
+  const db = await openDb();
+  return new Promise((ok, no) => {
+    const tx = db.transaction(store, mode), q = fn(tx.objectStore(store));
+    tx.oncomplete = () => ok(q && q.result); tx.onerror = tx.onabort = () => no(tx.error);
+  });
+}
+function snapshot() {
+  return {
+    v: 1, savedAt: nowText(), totalPages, pageCounts,
+    records,
+    // 그림 페이지가 가리키는 기록은 번호로 바꿔 저장한다 (다시 열 때 같은 기록에 이어 붙임)
+    imagePages: imagePages.map(ip => ({ ...ip, rec: ip.rec ? records.indexOf(ip.rec) : -1 })),
+    roster: roster ? { units: [...roster.units.values()], warn: roster.warn } : null,
+    quorum: $("#quorum").value, ownerOnly: $("#ownerOnly").checked,
+  };
+}
+function saveSoon() {
+  if (saveOff) return;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async () => {
+    try {
+      await idb(STORE_STATE, "readwrite", st => st.put(snapshot(), "main"));
+      $("#saveInfo").textContent = `이 브라우저에 저장됨 (${nowText()}). 창을 닫거나 새로 고쳐도 다시 열면 이어서 할 수 있습니다. 다른 사람과 같이 쓰는 PC 라면 작업 뒤 '모두 지우고 새로 시작' 을 누르세요.`;
+    } catch (e) {
+      console.error(e);
+      $("#saveInfo").textContent = "이 브라우저에 저장하지 못했습니다 (저장 공간 부족 또는 시크릿 창). 작업을 마치면 꼭 엑셀로 저장하세요.";
+    }
+  }, 60);
+}
+// 창을 닫거나 다른 탭으로 갈 때 아직 저장 전인 내용이 있으면 바로 저장을 시도한다
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden" && !saveOff && (records.length || imagePages.length || roster)) idb(STORE_STATE, "readwrite", st => st.put(snapshot(), "main")).catch(() => {}); });
+async function saveFile(f) {
+  try { await idb(STORE_FILES, "readwrite", st => st.put(f, f.name)); }
+  catch (e) { console.error(e); $("#saveInfo").textContent = `원본 '${f.name}' 을 브라우저에 저장하지 못했습니다 (저장 공간 부족). 읽은 결과는 저장되지만, 다시 열었을 때 이 파일의 원본 그림은 볼 수 없습니다.`; }
+}
+/* 원본 PDF: 이번에 넣은 파일이면 바로, 저장해 둔 파일이면 꺼내서 연다 */
+async function getDoc(name) {
+  if (docs[name]) return docs[name];
+  const blob = await idb(STORE_FILES, "readonly", st => st.get(name));
+  if (!blob) throw new Error("저장된 원본이 없습니다");
+  return docs[name] = await pdfjsLib.getDocument({ data: await blob.arrayBuffer() }).promise;
+}
+async function restore() {
+  let st;
+  try { st = await idb(STORE_STATE, "readonly", s => s.get("main")); } catch (e) { console.error(e); return; }
+  if (!st || !(st.records || []).length && !(st.imagePages || []).length && !st.roster) return;
+  records = st.records || [];
+  imagePages = (st.imagePages || []).map(ip => ({ ...ip, rec: ip.rec >= 0 ? records[ip.rec] : null }));
+  totalPages = st.totalPages || 0; pageCounts = st.pageCounts || {};
+  roster = st.roster ? { units: new Map(st.roster.units.map(u => [u.호수, u])), warn: st.roster.warn || [] } : null;
+  if (st.quorum) $("#quorum").value = st.quorum;
+  $("#ownerOnly").checked = !!st.ownerOnly;
+  setStatus(`저장해 둔 작업을 불러왔습니다 (${st.savedAt} 저장분): 위임장 ${records.length}건, 사람 판독 대기 ${pendingPages().length}쪽`);
+  saveOff = true; render(); saveOff = false;
+}
+
 /* ---------- 엑셀 ---------- */
 function unitKey(r) { const m = (r.호수 || "").match(/\d+/); return m ? +m[0] : 1e9; }
 function contactsSheet() {
   const rows = [...records].sort((a, b) => unitKey(a) - unitKey(b))
-    .map((r, i) => ({ No: i + 1, 이름: r.성명 || "", 호수: r.호수 || "", 전화번호: r.연락처 || "", 수임인: r.수임인 || "",
-      작성일: r.작성일 || "", 판독: r.판독자 ? `사람 판독(${r.판독자})` : "자동",
+    .map((r, i) => ({ No: i + 1, 호수: r.호수 || "",
+      // 면적은 명부의 전유면적 (호수가 여러 개면 합계). 명부가 없거나 호수가 명부에 없으면 빈칸
+      면적: roster ? ((r.호수 || "").split(", ").reduce((a, u) => a + (roster.units.get(u)?.면적 || 0), 0) || "") : "",
+      이름: r.성명 || "", 전화번호: r.연락처 || "", 작성일: r.작성일 || "", 수임인: r.수임인 || "",
+      "받은 쪽": (r.측 || "우리") + " 측", 종류: r.종류 === "철회" ? "철회" : "동의", 판독: r.판독자 ? `사람 판독(${r.판독자})` : "자동",
       비고: [r.검토, r.메모].filter(Boolean).join(" / ") }));
-  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "이름", "호수", "전화번호", "수임인", "작성일", "판독", "비고"] });
-  ws["!cols"] = [5, 12, 18, 16, 12, 12, 18, 40].map(w => ({ wch: w }));
+  const ws = XLSX.utils.json_to_sheet(rows, { header: ["No", "호수", "면적", "이름", "전화번호", "작성일", "수임인", "받은 쪽", "종류", "판독", "비고"] });
+  ws["!cols"] = [5, 18, 9, 12, 16, 12, 12, 9, 7, 18, 40].map(w => ({ wch: w }));
   return ws;
 }
 function detailSheet() {
-  const cols = ["파일", "쪽", "제목", "판독", "판독자", "판독일시", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토", "메모"];
-  const rows = records.map(r => Object.fromEntries(cols.map(c => [c, r[c] ?? ""])));
+  const cols = ["파일", "쪽", "받은쪽", "종류", "제목", "판독", "판독자", "판독일시", "위임인구분", "성명", "생년월일", "주소", "연락처", "호수", "작성일", "수임인", "수임인정보", "일련번호", "발급일", "서명완료", "발송자", "검토", "메모"];
+  const rows = records.map(r => Object.fromEntries(cols.map(c => [c, c === "받은쪽" ? (r.측 || "우리") + " 측" : c === "종류" ? (r.종류 || "동의") : r[c] ?? ""])));
   const ws = XLSX.utils.json_to_sheet(rows, { header: cols });
-  ws["!cols"] = [22, 5, 28, 10, 10, 16, 10, 10, 11, 40, 15, 16, 11, 10, 40, 10, 11, 19, 26, 40, 30].map(w => ({ wch: w }));
+  ws["!cols"] = [22, 5, 9, 7, 28, 10, 10, 16, 10, 10, 11, 40, 15, 16, 11, 10, 40, 10, 11, 19, 26, 40, 30].map(w => ({ wch: w }));
   return ws;
 }
 function humanSheet() {
@@ -834,6 +1263,7 @@ function download(onlyContacts) {
   if (!onlyContacts) {
     XLSX.utils.book_append_sheet(wb, detailSheet(), "위임장 목록");
     if (imagePages.length) XLSX.utils.book_append_sheet(wb, humanSheet(), "사람 판독 기록");
+    tallySheets(wb);
   }
   const d = new Date(), stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
   XLSX.writeFile(wb, `위임장_판독결과_${stamp}.xlsx`);
@@ -856,6 +1286,7 @@ async function run(files) {
   try { await handleFiles(files); } catch (e) { setStatus("오류: " + e.message); console.error(e); }
   finally { running = false; $("#stopBtn").hidden = true; drop.classList.remove("busy"); input.value = ""; }
 }
+restore();
 $("#stopBtn").onclick = () => {
   stopRequested = true;
   $("#stopBtn").disabled = true; $("#stopBtn").textContent = "멈추는 중… (지금 쪽까지 마무리)";
