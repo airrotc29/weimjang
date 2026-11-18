@@ -43,6 +43,7 @@ tr.warn td{background:var(--warn-bg)}
 .note{color:var(--warn);font-size:13px;white-space:normal;min-width:180px}
 .stats{display:flex;gap:22px;flex-wrap:wrap}
 .ed-form input.guess{background:var(--warn-bg);border-color:var(--warn)}
+.ed-form input.unsure{border:2px dashed #c0392b}
 .guess-note{color:var(--warn);background:var(--warn-bg);padding:8px 10px;border-radius:6px}
 .ed-sel{display:flex;gap:8px;flex-wrap:wrap}.ed-sel label{flex:1;min-width:90px}
 .ed-sel select,#quorum{padding:9px;font-size:15px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--text);width:100%;font-family:inherit}
@@ -133,6 +134,11 @@ button.danger{color:var(--warn);border-color:var(--warn)}
       <button id="startHuman">판독 시작</button>
       <span id="humanCount" class="hint" style="margin:0"></span>
       <label><input type="checkbox" id="showAll"> 처리된 페이지도 보기</label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" class="ghost" id="draftBtn">판독 초안 불러오기</button>
+      <input type="file" id="draftFile" accept=".json,application/json" hidden>
+      <span id="draftInfo" class="hint" style="margin:0">손글씨를 따로 읽어 만든 초안 파일(.json)을 불러오면, 판독 창에 그 값이 미리 채워집니다. 검토자는 틀린 칸만 고치면 됩니다.</span>
     </div>
     <div class="thumbs" id="thumbs" style="margin-top:14px"></div>
   </div>
@@ -766,13 +772,15 @@ async function openEditor(r, ip = null) {
   for (const [k] of GUESS_FIELDS) {
     const el = $("#f" + k);
     el.classList.toggle("guess", guess.includes(k) && !!el.value);
+    el.classList.toggle("unsure", !!ip && !r.판독자 && (r._unsure || []).includes(k));
     el.title = guess.includes(k) && el.value ? "프로그램이 읽은 값" + (r._from && r._from[k] ? ` (${r._from[k]})` : " (글자 인식)") + " – 원본과 대조하세요" : "";
   }
   $("#rosterHint").hidden = true;
   $("#guessNote").hidden = !guess.length;
   $("#guessNote").textContent = guess.length
     ? `색칠된 칸(${GUESS_FIELDS.filter(([k]) => guess.includes(k)).map(([, l]) => l).join(", ")})은 프로그램이 미리 읽은 값입니다. 손글씨는 틀리게 읽히기 쉬우니 원본과 한 글자씩 대조하고, 틀린 칸만 고치세요.` +
-      (r._from && r._from.성명 ? ` 이름은 ${r._from.성명}에서 가져왔습니다.` : "")
+      (r._from && /감사추적|명부/.test(r._from.성명 || "") ? ` 이름은 ${r._from.성명}에서 가져왔습니다.` : "") +
+      ((r._unsure || []).length ? ` 점선 테두리 칸(${GUESS_FIELDS.filter(([k]) => r._unsure.includes(k)).map(([, l]) => l).join(", ")})은 읽은 쪽에서도 확실하지 않다고 표시한 칸이니 특히 주의해서 보세요.` : "")
     : "";
   $("#agents").innerHTML = [...new Set(records.map(x => x.수임인).filter(Boolean))].map(a => `<option value="${a}">`).join("");
   $("#edImg").removeAttribute("src");
@@ -787,7 +795,7 @@ async function openEditor(r, ip = null) {
   } catch (e) { $("#edLoading").textContent = "원본을 불러오지 못했습니다."; }
 }
 function applyZoom() { $("#edImg").style.width = (zoomLevel * 100) + "%"; $("#zoomPct").textContent = Math.round(zoomLevel * 100) + "%"; }
-for (const [k] of GUESS_FIELDS) $("#f" + k).addEventListener("input", e => e.target.classList.remove("guess"));
+for (const [k] of GUESS_FIELDS) $("#f" + k).addEventListener("input", e => e.target.classList.remove("guess", "unsure"));
 /* 호수를 적고 나가면: 명부에 그 호수가 있고 이름 칸이 비어 있을 때 명부의 소유자 이름을 후보로 채운다.
    손글씨 이름을 처음부터 읽는 대신 '명부 이름과 같은지'만 확인하면 되게 하기 위함 */
 $("#f호수").addEventListener("change", () => {
@@ -837,7 +845,7 @@ function saveEditor() {
   r.메모 = $("#f메모").value.trim();
   r.측 = $("#f측").value; r.위임인구분 = $("#f구분").value; r.종류 = $("#f종류").value;
   // 사람이 원본을 보고 저장했으므로 자동 판독 때 붙은 확인 권고는 지운다 (확인한 줄이 계속 색칠되지 않게)
-  delete r._ocr; delete r._issue; delete r._guess; delete r._from; r.확인일시 = nowText();
+  delete r._ocr; delete r._issue; delete r._guess; delete r._from; delete r._unsure; r.확인일시 = nowText();
   return true;
 }
 function goNext(wasPage) {
@@ -1085,6 +1093,60 @@ function tallySheets(wb) {
   us["!cols"] = [10, 12, 10, 8, 70].map(w => ({ wch: w }));
   XLSX.utils.book_append_sheet(wb, us, "호수별 판정");
 }
+
+/* ---------- 판독 초안 불러오기 ----------
+   손글씨 쪽을 따로 읽어 만든 초안 파일을 '사람 판독 대기' 쪽에 붙인다. 초안은 판독 창에 미리 채워질 뿐이고,
+   기록으로 확정되는 것은 검토자가 원본과 대조해 저장했을 때다. 이미 사람이 처리한 쪽은 건드리지 않는다.
+   형식: { "format": "weimjang-draft", "pages": [ { "파일": "묶음.pdf", "쪽": 3, "성명": "…", "호수": "1206호", "연락처": "…",
+           "수임인": "…", "작성일": "2026-08-21", "위임인구분": "구분소유자|점유자", "종류": "동의|철회",
+           "불확실": ["연락처"], "메모": "…", "위임장아님": false } ] } */
+const DRAFT_KEYS = { 성명: "성명", 이름: "성명", 호수: "호수", 연락처: "연락처", 전화번호: "연락처", 수임인: "수임인", 작성일: "작성일" };
+function applyDrafts(data, source) {
+  const pages = Array.isArray(data) ? data : data && data.pages;
+  if (!Array.isArray(pages)) throw new Error("초안 파일 형식이 아닙니다 (pages 목록이 없음)");
+  const files = [...new Set(imagePages.map(ip => ip.file))];
+  let applied = 0, notWj = 0; const skipped = [];
+  for (const pg of pages) {
+    const no = +pg.쪽;
+    // 파일 이름이 같은 쪽을 찾고, 올려 둔 파일이 하나뿐이면 이름이 달라도 쪽 번호로 맞춘다
+    const ip = imagePages.find(x => x.page === no && x.file === pg.파일) || (files.length === 1 ? imagePages.find(x => x.page === no) : null);
+    if (!ip) { skipped.push(`${pg.파일 || ""} ${no}쪽: 화면에 그 쪽이 없음`); continue; }
+    if (ip.status !== "대기") { skipped.push(`${ip.file} ${no}쪽: 이미 처리된 쪽(${BADGE[ip.status]})이라 건너뜀`); continue; }
+    if (pg.위임장아님) {
+      ip.hint = `${source}: 위임장이 아닌 것으로 보임${pg.메모 ? " (" + pg.메모 + ")" : ""} → 원본을 보고 '위임장 아님'을 누르세요`;
+      delete ip.draft; notWj++; continue;
+    }
+    const d = { 쪽: no, _guess: [], _unsure: [], _from: {} };
+    for (const key in DRAFT_KEYS) {
+      const k = DRAFT_KEYS[key], raw = String(pg[key] ?? "").trim();
+      if (!raw || d[k]) continue;
+      d[k] = k === "호수" ? normUnits(raw) : k === "연락처" ? fmtPhone(raw) : k === "작성일" ? normDate(raw) : raw.replace(/\s+/g, "");
+      if (d[k]) { d._guess.push(k); d._from[k] = source; }
+    }
+    for (const u of pg.불확실 || []) { const k = DRAFT_KEYS[u]; if (k && !d._unsure.includes(k)) d._unsure.push(k); }
+    if (pg.위임인구분 === "점유자" || pg.위임인구분 === "구분소유자") d.위임인구분 = pg.위임인구분;
+    if (pg.종류 === "철회") d.종류 = "철회";
+    if (pg.메모) d.메모 = `${source}: ${pg.메모}`;
+    ip.draft = d;
+    const got = GUESS_FIELDS.filter(([k]) => d[k]).map(([, l]) => l);
+    ip.hint = `${source} 초안: ${got.join(", ") || "읽은 값 없음"}` + (d._unsure.length ? ` (불확실: ${GUESS_FIELDS.filter(([k]) => d._unsure.includes(k)).map(([, l]) => l).join(", ")})` : "") + " → 원본과 대조해 틀린 칸만 고치세요";
+    applied++;
+  }
+  return { applied, notWj, skipped };
+}
+$("#draftBtn").onclick = () => $("#draftFile").click();
+$("#draftFile").onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  try {
+    const data = JSON.parse(await f.text());
+    const r = applyDrafts(data, data.source || "AI 판독");
+    $("#draftInfo").textContent = `초안 ${r.applied}쪽을 붙였습니다` + (r.notWj ? ` · 위임장이 아닌 것으로 보이는 쪽 ${r.notWj}쪽` : "") +
+      (r.skipped.length ? ` · 건너뜀 ${r.skipped.length}쪽 (${r.skipped.slice(0, 3).join(" / ")}${r.skipped.length > 3 ? " …" : ""})` : "") +
+      ". '판독 시작'을 눌러 한 쪽씩 확인하세요.";
+    render();
+  } catch (err) { alert("초안 파일을 읽지 못했습니다: " + err.message); }
+  e.target.value = "";
+};
 
 /* ---------- 브라우저에 저장 (IndexedDB) ----------
    읽은 결과·명부·원본 PDF 를 이 브라우저 안에만 저장한다. 서버로는 아무것도 보내지 않는다.
